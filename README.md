@@ -15,8 +15,8 @@ En proceslås forhindrer flere serviceinstanser på samme datamappe.
 0, ikke at printet er færdigt. Fejl, timeout eller afbrudt start bliver `unknown`.
 Disse job genforsøges aldrig. Kontrollér printeren fysisk og brug `resolve`, når
 den er færdig og tom. Dermed frigives reservationen. `resolve` stopper ikke print.
-Printerens telemetri er foreløbig `unknown`; API'et viser servicestatus og jobstatus,
-ikke live temperatur/progress. Brug aldrig denne status som bevis på en tom plade.
+Printertelemetri kan aktiveres separat fra printstart (se nedenfor).
+Brug aldrig status som bevis på en tom plade.
 
 Upload er en rå HTTP-body, ikke multipart. Maks. 100 MiB pr. fil, 2 GiB samlet
 lager og 1000 job. ZIP-medlemmer kontrolleres for traversal, dubletter, kryptering,
@@ -72,6 +72,36 @@ de kan indeholde hemmeligheder. Midlertidige parametre har 0600 og fjernes efter
 kaldet. API-tokenet videregives ikke til driverens miljø.
 
 ## API
+
+### Printertelemetri
+
+Telemetri bruger Debian-pakken `python3-paho-mqtt` (2.x) og en selvstændig
+MQTT/TLS-forbindelse. Den abonnerer kun på printerens report-topic og sender
+kun en fast `pushall`-statusforespørgsel hvert 30. sekund. Den kalder aldrig
+plugin_runner og ændrer ikke jobtilstande eller printindstillingen.
+Certifikatkæden valideres mod Bambu CA; TLS kontrollerer serienummeret som
+værtsnavn, før MQTT sender adgangskoden. Rå MQTT-data og hemmeligheder
+returneres eller logges ikke.
+
+På den aktuelle Pi er afhængigheden allerede installeret. Aktivér i Termius:
+
+```sh
+sudo python3 ~/PrintPlatform/deploy/configure-telemetry.py \
+  --serial 22E8BJ652600933 --ip 192.168.0.191 \
+  --ca /home/codeadmin/.config/BambuStudio/cert/printer.cer
+```
+
+Scriptet beder om printerens access code lokalt uden at vise den, kopierer CA'en,
+opdaterer miljøfilen og genstarter servicen. Det kræver `PRINT_MODE=simulate`.
+På en ny Pi installeres først `sudo apt install python3-paho-mqtt`.
+
+`GET /v1/status` har nu et `printer`-objekt: `connected`, `state`, `last_seen`
+(Unix-tid), `stale`, `error` og tilgængelige felter `progress_percent`,
+`remaining_minutes`, `nozzle_c`, `bed_c`, `error_code` (rå printerfejlkode).
+Delrapporter flettes; hvert felt udløber efter 90 sekunder. Afbrudt forbindelse
+eller gammel tilstand giver `state=unknown`, aldrig et gættet IDLE.
+`error` beskriver forbindelsen; `error_code` beskriver printet.
+Beholdte MQTT-beskeder ignoreres. Status er ikke en fysisk sikkerhedskontrol.
 
 Alle kald kræver `Authorization: Bearer <token>`. Bind er fast `127.0.0.1:8787`.
 Der er ingen CORS-adgang. Brug SSH-tunnel under udvikling:

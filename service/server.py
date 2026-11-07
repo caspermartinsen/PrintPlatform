@@ -14,6 +14,7 @@ import time
 import uuid
 import zipfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from telemetry import Telemetry
 
 
 ACTIVE = ('starting', 'submitted', 'unknown')
@@ -188,7 +189,8 @@ class Handler(BaseHTTPRequestHandler):
     def route(self):
         store = self.server.store
         if self.command == 'GET' and self.path == '/v1/status':
-            self.reply(200, {'mode': os.environ.get('PRINT_MODE', 'simulate'), 'printer': 'unknown',
+            self.reply(200, {'mode': os.environ.get('PRINT_MODE', 'simulate'),
+                             'printer': self.server.telemetry.snapshot() if hasattr(self.server, 'telemetry') else {'state': 'unknown'},
                              'jobs': store.jobs(), 'automatic_start': False})
         elif self.command == 'GET' and self.path == '/v1/jobs':
             self.reply(200, {'jobs': store.jobs()})
@@ -262,6 +264,8 @@ def main():
     server = HTTPServer(('127.0.0.1', int(os.environ.get('PORT', '8787'))), Handler)
     server.token = token
     server.store = store
+    server.telemetry = Telemetry()
+    server.telemetry.start()
     server.serve_forever()
 
 
