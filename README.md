@@ -1,5 +1,13 @@
 # Printplatform til Raspberry Pi 3 / Debian 13
 
+## Webapp i Dokploy (første funktionelle version)
+
+Repo-roden indeholder nu Dockerfile til en samlet frontend/cloud-backend.
+Pi-agenten henter selv godkendte job via udgående HTTPS og sender printerstatus
+tilbage. Ingen indgående forbindelse til hjemmenettet er nødvendig.
+Se [Dokploy-opsætning og Pi-agent](frontend/README.md) for miljøvariabler,
+permanent lager og installation. Cloud-job udføres kun som simulering.
+
 Projektet samler `service/`, `frontend/` og `deploy/`. Python 3.11+ og
 standardbiblioteket er nok. Pi'ens eksisterende `open-bamboo-persano` er en separat
 driverafhængighed; biblioteket genbygges eller opdateres ikke af installationen.

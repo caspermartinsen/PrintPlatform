@@ -1,0 +1,9 @@
+.git
+.env
+**/.env
+**/__pycache__
+**/*.pyc
+**/*.sqlite*
+**/*.gcode.3mf
+**/environment
+.DS_Store

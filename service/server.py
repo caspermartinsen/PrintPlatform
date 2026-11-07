@@ -231,10 +231,13 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 temporary.unlink(missing_ok=True)
             self.reply(201, {'id': job_id, 'state': 'queued', 'sha256': digest.hexdigest()})
-        elif self.command == 'POST' and re.fullmatch(r'/v1/jobs/[0-9a-f-]{36}/(start|resolve)', self.path):
+        elif self.command == 'POST' and re.fullmatch(r'/v1/jobs/[0-9a-f-]{36}/(start|simulate|resolve)', self.path):
             payload = json.loads(self.rfile.read(self.body(4096)))
             job_id, action = self.path.split('/')[3:]
-            if action == 'start':
+            if action in ('start', 'simulate'):
+                if action == 'simulate' and os.environ.get('PRINT_MODE', 'simulate') != 'simulate':
+                    self.reply(409, {'error': 'Simulation endpoint refuses live mode'})
+                    return
                 if payload != {'confirm_job_id': job_id, 'printer_ready': True}:
                     raise ValueError('Explicit confirmation required')
                 try:

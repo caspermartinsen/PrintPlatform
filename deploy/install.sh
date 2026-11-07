@@ -12,6 +12,7 @@ install -d -m 700 /etc/print-service
 install -d -m 700 -o print-service -g print-service /var/lib/print-service
 install -m 644 "$project_dir/service/server.py" /opt/print-platform/service/server.py
 install -m 644 "$project_dir/service/telemetry.py" /opt/print-platform/service/telemetry.py
+install -m 644 "$project_dir/service/agent.py" /opt/print-platform/service/agent.py
 if [ ! -e /etc/print-service/environment ]; then
     install -m 600 "$project_dir/deploy/environment.example" /etc/print-service/environment
     /usr/bin/python3 - <<'PY'
@@ -22,5 +23,6 @@ path.write_text(path.read_text().replace('REPLACE_WITH_RANDOM_TOKEN_MINIMUM_32_C
 PY
 fi
 install -m 644 "$project_dir/deploy/print-service.service" /etc/systemd/system/print-service.service
+install -m 644 "$project_dir/deploy/print-agent.service" /etc/systemd/system/print-agent.service
 systemctl daemon-reload
 echo 'Installed, not started. Check configuration, then enable as described in README.'

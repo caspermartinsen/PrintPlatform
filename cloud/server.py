@@ -1,0 +1,189 @@
+import base64
+import contextlib
+import hashlib
+import hmac
+import json
+import os
+from pathlib import Path
+import re
+import sqlite3
+import sys
+import time
+import uuid
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'service'))
+from server import validate as validate_archive
+
+
+class Platform(HTTPServer):
+    def __init__(self, address, root, username, password, agent_token, public_url):
+        self.root = Path(root)
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.browser_auth = 'Basic ' + base64.b64encode((username + ':' + password).encode()).decode()
+        self.agent_auth = 'Bearer ' + agent_token
+        self.public_url = public_url.rstrip('/')
+        with self.db() as connection:
+            connection.execute('CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, name TEXT, sha256 TEXT, state TEXT, created REAL)')
+            connection.execute('CREATE TABLE IF NOT EXISTS telemetry (id INTEGER PRIMARY KEY, body TEXT, seen REAL)')
+        super().__init__(address, Handler)
+
+    @contextlib.contextmanager
+    def db(self):
+        connection = sqlite3.connect(self.root / 'platform.sqlite')
+        connection.row_factory = sqlite3.Row
+        connection.execute('PRAGMA synchronous=FULL')
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *_args):
+        pass
+
+    def respond(self, status, body, content_type='application/json', challenge=False):
+        data = json.dumps(body).encode() if content_type == 'application/json' else body
+        self.send_response(status)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Length', str(len(data)))
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('Content-Security-Policy', "default-src 'self'; frame-ancestors 'none'; base-uri 'none'")
+        self.send_header('Connection', 'close')
+        if challenge:
+            self.send_header('WWW-Authenticate', 'Basic realm="PrintPlatform", charset="UTF-8"')
+        self.end_headers()
+        self.wfile.write(data)
+        self.close_connection = True
+
+    def do_GET(self):
+        self.dispatch()
+
+    def do_POST(self):
+        self.dispatch()
+
+    def body(self, maximum=8192):
+        lengths = self.headers.get_all('Content-Length', [])
+        if len(lengths) != 1 or self.headers.get('Transfer-Encoding'):
+            raise ValueError('Content-Length required')
+        size = int(lengths[0])
+        if not 0 < size <= maximum:
+            raise ValueError('Body too large')
+        body = self.rfile.read(size)
+        if len(body) != size:
+            raise ValueError('Incomplete body')
+        return body
+
+    def dispatch(self):
+        self.connection.settimeout(20)
+        if self.command == 'GET' and self.path == '/healthz':
+            self.respond(200, {'ok': True})
+            return
+        agent = self.path.startswith('/agent/')
+        expected = self.server.agent_auth if agent else self.server.browser_auth
+        if not hmac.compare_digest(self.headers.get('Authorization', ''), expected):
+            self.respond(401, {'error': 'Login required'}, challenge=not agent)
+            return
+        if self.command == 'POST' and not agent and self.headers.get('Origin') != self.server.public_url:
+            self.respond(403, {'error': 'Origin rejected'})
+            return
+        try:
+            self.route(agent)
+        except (ValueError, TypeError, KeyError):
+            self.respond(400, {'error': 'Invalid request'})
+        except (OSError, sqlite3.Error):
+            self.respond(503, {'error': 'Storage unavailable'})
+
+    def route(self, agent):
+        platform = self.server
+        if self.command == 'GET' and not agent and self.path in ('/', '/app.js', '/style.css'):
+            name, mime = {'/': ('index.html', 'text/html; charset=utf-8'), '/app.js': ('app.js', 'application/javascript'), '/style.css': ('style.css', 'text/css')}[self.path]
+            self.respond(200, (Path(__file__).parents[1] / 'frontend' / name).read_bytes(), mime)
+        elif self.command == 'GET' and self.path == '/api/status':
+            with platform.db() as connection:
+                jobs = [dict(row) for row in connection.execute('SELECT * FROM jobs ORDER BY created DESC LIMIT 1000')]
+                telemetry = connection.execute('SELECT * FROM telemetry WHERE id=1').fetchone()
+            seen = telemetry['seen'] if telemetry else None
+            self.respond(200, {'jobs': jobs, 'agent_online': seen is not None and time.time() - seen < 45,
+                               'last_seen': seen, 'pi': json.loads(telemetry['body']) if telemetry else None})
+        elif self.command == 'POST' and self.path == '/api/jobs':
+            name = self.headers.get('X-Filename', '')
+            if not re.fullmatch(r'[A-Za-z0-9_. -]{1,120}\.gcode\.3mf', name):
+                raise ValueError('Filename')
+            with platform.db() as connection:
+                count = connection.execute('SELECT COUNT(*) FROM jobs').fetchone()[0]
+            if count >= 1000 or sum(item.stat().st_size for item in platform.root.iterdir()) > 2 * 1024**3:
+                self.respond(507, {'error': 'Storage quota reached'})
+                return
+            job_id = str(uuid.uuid4())
+            path = platform.root / (job_id + '.gcode.3mf')
+            try:
+                data = self.body(100 * 1024**2)
+                with path.open('xb') as target:
+                    target.write(data)
+                    target.flush()
+                    os.fsync(target.fileno())
+                validate_archive(path)
+                digest = hashlib.sha256(data).hexdigest()
+                with platform.db() as connection:
+                    connection.execute('INSERT INTO jobs VALUES (?,?,?,?,?)', (job_id, name, digest, 'queued', time.time()))
+            except Exception:
+                path.unlink(missing_ok=True)
+                raise
+            self.respond(201, {'id': job_id})
+        elif self.command == 'POST' and re.fullmatch(r'/api/jobs/[a-f0-9-]{36}/(approve|resolve)', self.path):
+            job_id = self.path.split('/')[3]
+            if json.loads(self.body()) != {'confirm_job_id': job_id}:
+                raise ValueError('Confirmation required')
+            with platform.db() as connection:
+                if self.path.endswith('/approve'):
+                    changed = connection.execute("UPDATE jobs SET state='approved' WHERE id=? AND state='queued'", (job_id,)).rowcount
+                else:
+                    changed = connection.execute("UPDATE jobs SET state='resolved' WHERE id=? AND state IN ('unknown','dispatched')", (job_id,)).rowcount
+            self.respond(200 if changed else 409, {'saved': bool(changed)})
+        elif agent and self.command == 'POST' and self.path == '/agent/poll':
+            report = json.loads(self.body(262144))
+            if not isinstance(report, dict) or report.get('mode') != 'simulate':
+                raise ValueError('Only simulated execution is enabled in this version')
+            with platform.db() as connection:
+                connection.execute('INSERT OR REPLACE INTO telemetry VALUES (1,?,?)', (json.dumps(report), time.time()))
+                active = connection.execute("SELECT 1 FROM jobs WHERE state IN ('dispatched','unknown')").fetchone()
+                job = None if active else connection.execute("SELECT * FROM jobs WHERE state='approved' ORDER BY created LIMIT 1").fetchone()
+                if job:
+                    connection.execute("UPDATE jobs SET state='dispatched' WHERE id=?", (job['id'],))
+            self.respond(200, {'job': dict(job) if job else None})
+        elif agent and self.command == 'GET' and re.fullmatch(r'/agent/files/[a-f0-9-]{36}', self.path):
+            job_id = self.path.split('/')[-1]
+            with platform.db() as connection:
+                job = connection.execute("SELECT 1 FROM jobs WHERE id=? AND state='dispatched'", (job_id,)).fetchone()
+            if not job:
+                self.respond(404, {'error': 'Job not dispatched'})
+                return
+            self.respond(200, (platform.root / (job_id + '.gcode.3mf')).read_bytes(), 'application/octet-stream')
+        elif agent and self.command == 'POST' and self.path == '/agent/result':
+            report = json.loads(self.body())
+            if report['state'] not in ('simulated', 'unknown'):
+                raise ValueError('Invalid state')
+            with platform.db() as connection:
+                changed = connection.execute("UPDATE jobs SET state=? WHERE id=? AND state IN ('dispatched', ?)", (report['state'], report['id'], report['state'])).rowcount
+                if not changed:
+                    changed = connection.execute("SELECT 1 FROM jobs WHERE id=? AND state='resolved'", (report['id'],)).fetchone() is not None
+            self.respond(200 if changed else 409, {'saved': bool(changed)})
+        else:
+            self.respond(404, {'error': 'Not found'})
+
+
+def main():
+    os.umask(0o077)
+    required = {key: os.environ[key] for key in ('WEB_USER', 'WEB_PASSWORD', 'AGENT_TOKEN', 'PUBLIC_URL')}
+    if len(required['WEB_PASSWORD']) < 16 or len(required['AGENT_TOKEN']) < 32:
+        raise SystemExit('Use a password of at least 16 characters and agent token of at least 32')
+    Platform(('0.0.0.0', int(os.environ.get('PORT', '3000'))), os.environ.get('DATA_DIR', '/data'),
+             required['WEB_USER'], required['WEB_PASSWORD'], required['AGENT_TOKEN'], required['PUBLIC_URL']).serve_forever()
+
+
+if __name__ == '__main__':
+    main()

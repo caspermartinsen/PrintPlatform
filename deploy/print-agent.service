@@ -1,0 +1,28 @@
+[Unit]
+Description=PrintPlatform outgoing HTTPS agent
+After=network-online.target print-service.service
+Wants=network-online.target print-service.service
+
+[Service]
+User=print-service
+Group=print-service
+EnvironmentFile=/etc/print-service/environment
+EnvironmentFile=/etc/print-service/agent-environment
+ExecStart=/usr/bin/python3 /opt/print-platform/service/agent.py
+Restart=on-failure
+RestartSec=10
+StateDirectory=print-agent
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LimitCORE=0
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target
