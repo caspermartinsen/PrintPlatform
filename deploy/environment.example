@@ -1,0 +1,13 @@
+API_TOKEN=REPLACE_WITH_RANDOM_TOKEN_MINIMUM_32_CHARACTERS
+PRINT_MODE=simulate
+DATA_DIR=/var/lib/print-service
+PORT=8787
+BAMBU_REPO=/opt/open-bamboo-persano
+BAMBU_PARAMS=/etc/print-service/print.params.json
+BAMBU_DEV_ID=REPLACE_WITH_PRINTER_SERIAL
+BAMBU_DEV_IP=192.168.0.191
+BAMBU_ACCESS_CODE=REPLACE_LOCALLY
+BAMBU_CERT=/var/lib/print-service/config/cert/slicer_base64.cer
+HOME=/var/lib/print-service
+XDG_CONFIG_HOME=/var/lib/print-service/config
+XDG_CACHE_HOME=/var/lib/print-service/cache

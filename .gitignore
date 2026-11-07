@@ -1,0 +1,8 @@
+__pycache__/
+.DS_Store
+*.pyc
+.env
+*.sqlite*
+*.gcode.3mf
+*.params.json
+environment

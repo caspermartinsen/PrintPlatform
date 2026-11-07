@@ -1,0 +1,33 @@
+[Unit]
+Description=Persano print API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=print-service
+Group=print-service
+EnvironmentFile=/etc/print-service/environment
+ExecStart=/usr/bin/python3 /opt/print-platform/service/server.py
+Restart=on-failure
+RestartSec=5
+StateDirectory=print-service
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/print-service /opt/open-bamboo-persano
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LimitCORE=0
+MemoryMax=512M
+TasksMax=48
+KillMode=control-group
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
