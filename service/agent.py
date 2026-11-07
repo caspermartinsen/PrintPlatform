@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import time
 import urllib.request
+import urllib.error
 import uuid
 
 
@@ -100,11 +101,17 @@ def main():
     os.umask(0o077)
     agent = Agent(os.environ.get('AGENT_DATA_DIR', '/var/lib/print-agent'), os.environ['PLATFORM_URL'],
                   os.environ['AGENT_TOKEN'], 'http://127.0.0.1:' + os.environ.get('PORT', '8787'), os.environ['API_TOKEN'])
+    connected = False
     while True:
         try:
             agent.tick()
-        except Exception:
-            print('Platform connection unavailable or job requires review', flush=True)
+            if not connected:
+                print('Platform connected; status delivered', flush=True)
+            connected = True
+        except Exception as error:
+            connected = False
+            detail = 'HTTP ' + str(error.code) if isinstance(error, urllib.error.HTTPError) else type(error).__name__
+            print('Platform connection unavailable or job requires review: ' + detail, flush=True)
         time.sleep(5)
 
 
