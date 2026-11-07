@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import ssl
 import threading
 import time
@@ -19,6 +20,54 @@ class Telemetry:
         self.error = 'disabled'
         self.values = {}
         self.last_seen = None
+        self.ams_slots = {}
+
+    def update_ams(self, report, now):
+        units = report.get('ams')
+        if not isinstance(units, list):
+            return
+        try:
+            present_bits = int(report['tray_exist_bits'], 16)
+        except (KeyError, TypeError, ValueError):
+            present_bits = None
+        try:
+            unit_bits = int(report['ams_exist_bits'], 16)
+        except (KeyError, TypeError, ValueError):
+            unit_bits = None
+        if unit_bits is not None:
+            self.ams_slots = {key: value for key, value in self.ams_slots.items() if unit_bits & (1 << key[0])}
+        for unit in units[:16]:
+            if not isinstance(unit, dict) or not str(unit.get('id', '')).isdigit():
+                continue
+            unit_id = int(unit['id'])
+            if not 0 <= unit_id < 16 or unit_bits is not None and not unit_bits & (1 << unit_id):
+                continue
+            trays = unit.get('tray', [])
+            if not isinstance(trays, list):
+                continue
+            for slot in range(4):
+                fields = self.ams_slots.setdefault((unit_id, slot), {})
+                if present_bits is not None:
+                    present = bool(present_bits & (1 << (unit_id * 4 + slot)))
+                    if not present:
+                        fields.clear()
+                    fields['present'] = (present, now)
+            for tray in trays[:4]:
+                if not isinstance(tray, dict) or str(tray.get('id', '')) not in ('0', '1', '2', '3'):
+                    continue
+                fields = self.ams_slots[(unit_id, int(tray['id']))]
+                if fields.get('present') == (False, now):
+                    continue
+                if 'tray_color' in tray:
+                    color = tray['tray_color']
+                    fields['color'] = (color.upper() if isinstance(color, str) and re.fullmatch(r'[0-9a-fA-F]{8}', color) else None, now)
+                for source, target in (('tray_type', 'material'), ('tray_sub_brands', 'name')):
+                    if source in tray:
+                        value = tray[source]
+                        fields[target] = (value[:80] if isinstance(value, str) and value else None, now)
+                if 'remain' in tray:
+                    remain = tray['remain']
+                    fields['remaining_percent'] = (remain if type(remain) is int and 0 <= remain <= 100 else None, now)
 
     def ingest(self, payload, now=None):
         now = time.time() if now is None else now
@@ -42,6 +91,8 @@ class Telemetry:
             if type(value) in (int, float) and 0 <= value <= maximum:
                 accepted[target] = value
         with self.lock:
+            if isinstance(report.get('ams'), dict):
+                self.update_ams(report['ams'], now)
             for key, value in accepted.items():
                 self.values[key] = (value, now)
             if accepted:
@@ -50,12 +101,18 @@ class Telemetry:
     def snapshot(self, now=None):
         now = time.time() if now is None else now
         with self.lock:
+            slots = []
+            for (unit_id, slot), values in sorted(self.ams_slots.items()):
+                fields = {key: value if self.connected and now - stamp <= 90 else None
+                          for key, (value, stamp) in values.items()}
+                slots.append({'ams_id': unit_id, 'slot': slot + 1,
+                              'stale': not self.connected or not values or all(now - stamp > 90 for value, stamp in values.values()), **fields})
             fields = {key: value if self.connected and now - stamp <= 90 else None
                       for key, (value, stamp) in self.values.items()}
             return {'connected': self.connected, 'state': fields.pop('state', None) or 'unknown',
                     'last_seen': self.last_seen,
                     'stale': not self.connected or self.last_seen is None or now - self.last_seen > 90,
-                    'error': self.error, **fields}
+                    'error': self.error, 'ams_slots': slots, **fields}
 
     def start(self):
         if os.environ.get('TELEMETRY_ENABLED', '0') == '1':
@@ -110,4 +167,5 @@ class Telemetry:
                     self.connected = False
                     self.error = 'connection_failed'
                     self.values.clear()
+                    self.ams_slots.clear()
                 time.sleep(10)

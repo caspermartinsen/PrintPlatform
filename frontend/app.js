@@ -19,10 +19,32 @@ async function approve(job) {
     } catch (error) { element('message').textContent = error.message; }
   }, {once:true});
 }
+function renderAMS(printer, online) {
+  const slots = Array.isArray(printer?.ams_slots) ? printer.ams_slots : [];
+  const cards = slots.map(slot => {
+    const fresh = online && printer.connected && !slot.stale;
+    const card = document.createElement('article'); card.className = 'ams-card';
+    const heading = document.createElement('h3'); heading.textContent = `AMS ${slot.ams_id + 1} · Plads ${slot.slot}`;
+    const swatch = document.createElement('div'); swatch.className = 'filament-swatch';
+    const color = fresh && slot.present !== false && /^[0-9A-F]{8}$/i.test(slot.color || '') ? slot.color : null;
+    if (color) swatch.style.backgroundColor = `#${color}`;
+    swatch.setAttribute('aria-label', color ? `Farvekode #${color}` : 'Farve ukendt');
+    const name = document.createElement('strong');
+    name.textContent = !fresh ? 'Status ukendt' : slot.present === false ? 'Tom plads' : slot.name || slot.material || 'Ukendt filament';
+    const details = document.createElement('p');
+    details.textContent = !fresh ? 'Afventer friske oplysninger' : slot.present === false ? 'Intet filament registreret' : `${slot.material || 'Ukendt materiale'} · ${color ? '#' + color : 'Ukendt farve'}`;
+    const remain = document.createElement('span'); remain.className = 'ams-remaining';
+    remain.textContent = fresh && slot.present !== false && slot.remaining_percent != null ? `Ca. ${slot.remaining_percent} % tilbage` : 'Restmængde ukendt';
+    card.append(heading, swatch, name, details, remain); return card;
+  });
+  element('ams-slots').replaceChildren(...cards);
+  if (!cards.length) element('ams-slots').textContent = online ? 'Afventer AMS-oplysninger fra printeren.' : 'AMS-status utilgængelig – Pi offline.';
+}
 async function refresh() {
   try {
     const data = await api('/api/status');
     const printer = data.pi?.printer;
+    renderAMS(printer, data.agent_online);
     const fresh = data.agent_online && printer?.connected && !printer.stale;
     element('connection').textContent = data.agent_online ? 'Pi online' : 'Pi offline';
     element('connection').className = `badge ${data.agent_online ? 'online' : ''}`;
@@ -55,6 +77,7 @@ async function refresh() {
     element('jobs').replaceChildren(...rows);
     if (!rows.length) element('jobs').textContent = 'Køen er tom.';
   } catch (error) {
+    renderAMS(null, false);
     element('connection').textContent = 'Server utilgængelig';
     element('connection').className = 'badge';
     element('state').textContent = 'Status ukendt';

@@ -57,6 +57,12 @@ Pi-API'et forbliver på loopback. `PRINT_MODE=simulate` skal bevares.
 
 ## Funktionelt forløb
 
+AMS-kort viser pladser (nummereret fra 1), printerens RGBA-farve, filamentnavn,
+materiale og estimeret restprocent. Tomme pladser markeres kun som tomme, når
+printeren rapporterer det. Ukendte/gamle data vises uden farve og restmængde.
+RFID-numre og spoleidentifikatorer sendes ikke videre til cloud. AMS-visningen
+vælger ikke filament og ændrer ikke printparametre.
+
 Log ind, kontrollér printerstatus og upload en betroet enkeltplade `.gcode.3mf`
 (maks. 100 MiB). Jobbet bliver i køen indtil **Godkend simulering** og den
 efterfølgende dialog er godkendt. Pi'en henter filen, verificerer SHA-256 og
