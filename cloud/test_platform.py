@@ -34,7 +34,7 @@ class PlatformTests(unittest.TestCase):
         self.local.store = Store(root / 'pi')
         self.local.telemetry = Telemetry()
         self.local.telemetry.connected = True
-        self.local.telemetry.ingest(b'{"print":{"gcode_state":"IDLE","ams":{"tray_exist_bits":"1","ams":[{"id":"0","tray":[{"id":"0","tray_type":"PLA","tray_sub_brands":"PLA Basic","tray_color":"000000FF"}]}]}}}')
+        self.local.telemetry.ingest(b'{"print":{"gcode_state":"IDLE","print_error":0,"ams":{"tray_exist_bits":"1","ams":[{"id":"0","tray":[{"id":"0","tray_type":"PLA","tray_sub_brands":"PLA Basic","tray_color":"000000FF"}]}]}}}')
         self.threads = []
         for server in (self.platform, self.local):
             thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -68,7 +68,7 @@ class PlatformTests(unittest.TestCase):
             archive.writestr('[Content_Types].xml', '<Types/>')
             archive.writestr('Metadata/plate_1.gcode', '; simulation')
             archive.writestr('Metadata/slice_info.config', '<config><plate><filament id="1" type="PLA" color="#000000" used_g="1"/></plate></config>')
-            archive.writestr('Metadata/project_settings.config', '{"filament_settings_id":["PLA Basic"]}')
+            archive.writestr('Metadata/project_settings.config', '{"filament_settings_id":["PLA Basic"],"printer_model":"Bambu Lab P2S"}')
         return self.browser('/api/jobs', data.getvalue())['id']
 
     def approve(self, job_id):
@@ -124,11 +124,71 @@ class PlatformTests(unittest.TestCase):
             self.browser('/api/jobs', b'x', origin='https://attacker.example')
         self.assertEqual(error.exception.code, 403)
         with self.assertRaises(urllib.error.HTTPError) as error:
-            self.agent.remote('/agent/poll', {'mode': 'live'})
+            self.agent.remote('/agent/poll', {'mode': 'invalid'})
         self.assertEqual(error.exception.code, 400)
         with patch.dict('os.environ', {'PRINT_MODE': 'live'}):
-            with self.assertRaises(ValueError):
+            self.agent.tick()
+
+    def test_live_acknowledgement_retry_without_second_driver_call(self):
+        job_id = self.upload()
+        template = Path(self.directory.name) / 'params.json'
+        template.write_text('{}')
+        environment = {'PRINT_MODE':'live','ALLOW_REMOTE_LIVE':'1','ALLOW_LIVE_PRINT':'1',
+            'BAMBU_REPO':self.directory.name,'BAMBU_PARAMS':str(template),'BAMBU_DEV_ID':'fake',
+            'BAMBU_DEV_IP':'127.0.0.1','BAMBU_ACCESS_CODE':'fake','BAMBU_CERT':'/fake'}
+        with patch.dict('os.environ',environment), patch('server.subprocess.Popen') as launch:
+            launch.return_value.__enter__.return_value.wait.return_value=0
+            self.agent.tick()
+            payload={'confirm_job_id':job_id,'ams_id':0,'slot':1,'bed_clear':True,
+                'accept_differences':True,'execution_mode':'live','confirm_physical':'START PRINT'}
+            self.browser('/api/jobs/'+job_id+'/approve',json.dumps(payload).encode())
+            original=self.agent.remote
+            def lost_ack(path,body=None,raw=False):
+                if path=='/agent/result': raise OSError('Lost acknowledgement')
+                return original(path,body,raw)
+            with patch.object(self.agent,'remote',side_effect=lost_ack), self.assertRaises(OSError):
                 self.agent.tick()
+            self.agent.tick()
+            launch.assert_called_once()
+            job=self.browser('/api/status')['jobs'][0]
+            self.assertEqual(job['state'],'submitted')
+            self.assertTrue(json.loads(job['receipt'])['driver_accepted'])
+            self.assertEqual(len(self.local.store.jobs()),1)
+            self.browser('/api/jobs/'+job_id+'/resolve',json.dumps({'confirm_job_id':job_id,'printer_checked_idle':True}).encode())
+            self.agent.tick()
+            self.assertEqual(self.local.store.jobs()[0]['state'],'resolved')
+
+    def test_live_approval_disabled_by_default_and_simulation_stays_simulation(self):
+        job_id=self.upload()
+        self.agent.tick()
+        payload={'confirm_job_id':job_id,'ams_id':0,'slot':1,'bed_clear':True,
+            'accept_differences':True,'execution_mode':'live','confirm_physical':'START PRINT'}
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.browser('/api/jobs/'+job_id+'/approve',json.dumps(payload).encode())
+        self.assertEqual(error.exception.code,409)
+        self.approve(job_id)
+        with patch.dict('os.environ',{'PRINT_MODE':'live','ALLOW_REMOTE_LIVE':'1'}), patch('server.subprocess.Popen',side_effect=AssertionError('Simulation must never run driver')) as launch:
+            self.agent.tick()
+            launch.assert_not_called()
+        self.assertEqual(self.browser('/api/status')['jobs'][0]['state'],'simulated')
+
+    def test_agent_restart_follows_local_status_without_starting_again(self):
+        job_id=self.upload()
+        self.approve(job_id)
+        self.agent.remote('/agent/poll',{'mode':'simulate','plan_version':2})
+        local_id='00000000-0000-0000-0000-000000000001'
+        with self.local.store.db() as connection:
+            connection.execute('INSERT INTO jobs (id,name,sha256,state,created) VALUES (?,?,?,?,?)',(local_id,'test.gcode.3mf','fake','starting',0))
+        path=self.agent.root/(job_id+'.json')
+        self.agent.save(path,{'id':job_id,'local_job_id':local_id,'state':'awaiting'})
+        with patch('server.subprocess.Popen',side_effect=AssertionError('Never repeat a start')) as launch:
+            self.agent.tick()
+            self.assertTrue(path.exists())
+            self.local.store.state(local_id,'simulated')
+            self.agent.tick()
+            launch.assert_not_called()
+        self.assertFalse(path.exists())
+        self.assertEqual(self.browser('/api/status')['jobs'][0]['state'],'simulated')
 
     def test_restart_with_pending_journal_is_unknown(self):
         job_id = self.upload()

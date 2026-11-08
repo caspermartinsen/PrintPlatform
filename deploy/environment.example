@@ -1,5 +1,6 @@
 API_TOKEN=REPLACE_WITH_RANDOM_TOKEN_MINIMUM_32_CHARACTERS
 PRINT_MODE=simulate
+ALLOW_REMOTE_LIVE=0
 TELEMETRY_ENABLED=0
 BAMBU_TELEMETRY_CA=/var/lib/print-service/config/cert/printer.cer
 DATA_DIR=/var/lib/print-service

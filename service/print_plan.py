@@ -80,3 +80,12 @@ def mapping(selection):
     flat[index] = selection['ams_id'] * 4 + selection['slot'] - 1
     return {'task_use_ams': True, 'ams_mapping': json.dumps(flat),
             'ams_mapping2': json.dumps([{'ams_id': selection['ams_id'], 'slot_id': selection['slot'] - 1}])}
+
+
+def live_ready(analysis, printer, selection):
+    if analysis.get('printer_model') != 'Bambu Lab P2S':
+        raise ValueError('Live-print kræver en fil slicet til Bambu Lab P2S.')
+    if printer.get('state') not in ('IDLE', 'FINISH') or printer.get('error_code') != 0:
+        raise ValueError('Printeren skal være klar uden fejl. Kontrollér printerens skærm.')
+    if any('profil' in warning.lower() for warning in selection.get('warnings', [])):
+        raise ValueError('Live-print kræver en filamentprofil, der matcher AMS-spolen.')

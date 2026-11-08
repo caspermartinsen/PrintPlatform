@@ -1,6 +1,7 @@
 const element = id => document.getElementById(id);
-const labels = {queued:'Afventer godkendelse',approved:'Klar til Pi',dispatched:'Sendt til Pi',simulated:'Simulering gennemført',unknown:'Kræver gennemgang',resolved:'Gennemgået og lukket'};
+const labels = {queued:'Afventer godkendelse',approved:'Klar til Pi',dispatched:'Sendt til Pi',submitted:'Driver har accepteret printkommandoen – afventer kontrol',simulated:'Simulering gennemført',unknown:'Kræver gennemgang',resolved:'Gennemgået og lukket'};
 let latestPrinter = null;
+let liveEnabled = false;
 async function api(path, options = {}) {
   const response = await fetch(path, options);
   const body = await response.json();
@@ -14,6 +15,22 @@ async function approve(job) {
   const oldControls = document.getElementById('print-choice');
   if (oldControls) oldControls.remove();
   const controls = document.createElement('div'); controls.id = 'print-choice';
+  const modeLabel = document.createElement('label'); modeLabel.textContent = 'Handling'; modeLabel.htmlFor = 'execution-mode';
+  const mode = document.createElement('select'); mode.id = 'execution-mode';
+  for (const [value,text] of [['simulate','Simulér – ingen fysisk printstart'],['live','Start fysisk print']]) {
+    const option = document.createElement('option'); option.value=value; option.textContent=text; option.disabled=value==='live' && !liveEnabled; mode.append(option);
+  }
+  const physical = document.createElement('input'); physical.type='text'; physical.id='physical-confirmation'; physical.autocomplete='off'; physical.pattern='START PRINT';
+  const physicalLabel = document.createElement('label'); physicalLabel.htmlFor=physical.id; physicalLabel.textContent='Skriv START PRINT for at godkende fysisk printstart';
+  physical.hidden=true; physicalLabel.hidden=true;
+  const submit = dialog.querySelector('[value="approve"]');
+  mode.onchange = () => {
+    const live = mode.value==='live'; physical.required=live; physical.hidden=!live; physicalLabel.hidden=!live; physical.value='';
+    submit.textContent=live?'Start fysisk print':'Godkend simulering';
+    dialog.querySelector('h2').textContent=live?'Bekræft fysisk printstart':'Godkend simulering';
+    dialog.querySelector('form > p:last-of-type').textContent=live?'Printeren kan begynde klargøring og print straks efter godkendelsen.':'Pi’en tester forløbet uden fysisk printstart.';
+  };
+  mode.onchange();
   const filament = job.analysis.filaments[0];
   const requirement = document.createElement('p');
   requirement.textContent = `Filen bruger 1 filament: ${filament.material} · ${filament.profile || 'Ukendt profil'} · ${filament.color || 'Ukendt farve'}`;
@@ -41,16 +58,16 @@ async function approve(job) {
   };
   const bed = document.createElement('input'); bed.type = 'checkbox'; bed.required = true;
   const bedLabel = document.createElement('label'); bedLabel.className = 'check-label'; bedLabel.append(bed, document.createTextNode('Jeg har kontrolleret, at byggepladen er tom.'));
-  const hint = document.createElement('p'); hint.textContent = 'Kun samme materialetype kan vælges. Tomme eller ukendte pladser vises ikke. Valget testes i simulering.';
+  const hint = document.createElement('p'); hint.textContent = 'Kun samme materialetype kan vælges. Tomme eller ukendte pladser vises ikke. Kontrollér den valgte plads før godkendelse.';
   differencesLabel.hidden = true;
-  controls.append(requirement, label, choice, hint, warning, differencesLabel, bedLabel);
+  controls.append(modeLabel,mode,requirement, label, choice, hint, warning, differencesLabel, bedLabel,physicalLabel,physical);
   element('approvalName').after(controls);
   dialog.returnValue = 'cancel';
   dialog.showModal();
   dialog.addEventListener('close', async () => {
     if (dialog.returnValue !== 'approve') return;
     try {
-      await api(`/api/jobs/${job.id}/approve`, {method:'POST', headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm_job_id:job.id,...JSON.parse(choice.value),bed_clear:bed.checked,accept_differences:differences.checked})});
+      await api(`/api/jobs/${job.id}/approve`, {method:'POST', headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm_job_id:job.id,...JSON.parse(choice.value),bed_clear:bed.checked,accept_differences:differences.checked,execution_mode:mode.value,confirm_physical:physical.value})});
       await refresh();
     } catch (error) { element('message').textContent = error.message; }
   }, {once:true});
@@ -80,6 +97,8 @@ async function refresh() {
   try {
     const data = await api('/api/status');
     const printer = data.pi?.printer;
+    liveEnabled = data.live_enabled === true;
+    document.querySelector('.notice').textContent = liveEnabled ? 'Fysisk print er aktiveret. Hvert job kræver valg af handling og særskilt bekræftelse.' : 'Simulering er aktiv. Godkendte job gennemløber køen uden at starte fysiske print.';
     latestPrinter = data.agent_online ? printer : null;
     renderAMS(printer, data.agent_online);
     const fresh = data.agent_online && printer?.connected && !printer.stale;
@@ -101,13 +120,14 @@ async function refresh() {
       analysis.textContent = job.analysis?.supported ? `1 anvendt filament · ${job.analysis.filaments[0].material} · ${job.analysis.filaments[0].profile || 'Ukendt profil'}` : job.analysis?.reason || 'Filanalyse ukendt';
       details.append(analysis);
       if (job.selection) { const selection = document.createElement('small'); selection.textContent = `Valgt: AMS ${job.selection.ams_id + 1}, plads ${job.selection.slot} · ${job.selection.name || job.selection.material}`; details.append(selection); }
+      if (job.execution_mode) { const mode = document.createElement('small'); mode.textContent=job.execution_mode==='live'?'Handling: fysisk print':'Handling: simulering'; details.append(mode); }
       if (job.state === 'queued') { const button = document.createElement('button'); button.textContent = 'Vælg filament og godkend'; button.disabled = !job.analysis?.supported || !fresh; button.onclick = () => approve(job); row.append(button); }
-      if (['unknown','dispatched'].includes(job.state)) {
+      if (['unknown','dispatched','submitted'].includes(job.state)) {
         const button = document.createElement('button'); button.className = 'secondary'; button.textContent = 'Luk efter kontrol';
         button.onclick = async () => {
           if (!window.confirm('Har du kontrolleret jobbet på Pi’en? Lukning frigiver køen og genstarter eller stopper ikke jobbet.')) return;
           try {
-            await api(`/api/jobs/${job.id}/resolve`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm_job_id:job.id})});
+            await api(`/api/jobs/${job.id}/resolve`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm_job_id:job.id,printer_checked_idle:true})});
             await refresh();
           } catch (error) { element('message').textContent = error.message; }
         };

@@ -66,15 +66,26 @@ class Agent:
     def work(self):
         for path in self.root.glob('*.json'):
             record = json.loads(path.read_text())
+            if record['state'] == 'awaiting':
+                if not self.finish(record):
+                    return
+                self.save(path, record)
             if record['state'] == 'pending':
                 record['state'] = 'unknown'
                 self.save(path, record)
             self.remote('/agent/result', record)
             path.unlink()
         status = request(self.local, '/v1/status', self.api_token)
-        if status.get('mode') != 'simulate':
-            raise ValueError('Agent refuses physical printing in this version')
-        job = self.remote('/agent/poll', {'mode': 'simulate', 'plan_version': 1, 'printer': status['printer']})['job']
+        if status.get('mode') not in ('simulate','live'):
+            raise ValueError('Unknown local mode')
+        response = self.remote('/agent/poll', {'mode': status['mode'], 'remote_live_enabled':status.get('remote_live_enabled',False),
+            'local_busy':any(item['state'] in ('starting','submitted','unknown') for item in status['jobs']), 'plan_version': 2, 'printer': status['printer']})
+        for local_id in response.get('resolutions',[]):
+            local_job = next((item for item in status['jobs'] if item['id']==local_id),None)
+            printer = status['printer']
+            if local_job and local_job['state'] in ('submitted','unknown') and printer.get('connected') and not printer.get('stale') and printer.get('state') in ('IDLE','FINISH') and printer.get('error_code')==0:
+                request(self.local,'/v1/jobs/'+local_id+'/resolve',self.api_token,{'printer_checked_idle':True})
+        job = response['job']
         if job is None:
             return
         job_id = str(uuid.UUID(job['id']))
@@ -82,30 +93,41 @@ class Agent:
         record = {'id': job_id, 'state': 'pending'}
         self.save(path, record)
         try:
+            execution_mode = job.get('execution_mode') or 'simulate'
+            if execution_mode not in ('simulate','live') or execution_mode == 'live' and not status.get('remote_live_enabled'):
+                raise ValueError('Physical printing disabled')
             data = self.remote('/agent/files/' + job_id, raw=True)
             if hashlib.sha256(data).hexdigest() != job['sha256']:
                 raise ValueError('Checksum mismatch')
             uploaded = request(self.local, '/v1/jobs', self.api_token, data, extra={'X-Filename': job['name']})
             local_id = uploaded['id']
             fresh = request(self.local, '/v1/status', self.api_token)
-            if fresh['mode'] != 'simulate':
-                raise ValueError('Mode changed')
-            request(self.local, '/v1/jobs/' + local_id + '/simulate', self.api_token,
-                    {'confirm_job_id': local_id, 'printer_ready': True, 'selection': json.loads(job['selection'])})
+            if execution_mode == 'live' and not fresh.get('remote_live_enabled'):
+                raise ValueError('Physical printing disabled')
+            record.update(state='awaiting',local_job_id=local_id)
+            self.save(path,record)
+            request(self.local, '/v1/jobs/' + local_id + '/remote-start', self.api_token,
+                    {'confirm_job_id': local_id, 'printer_ready': True, 'selection': json.loads(job['selection']),
+                     'execution_mode':execution_mode, 'confirm_physical':'START PRINT' if execution_mode=='live' else None})
             for attempt in range(30):
-                local_jobs = request(self.local, '/v1/jobs', self.api_token)['jobs']
-                result = next(item for item in local_jobs if item['id'] == local_id)
-                if result['state'] != 'starting':
-                    record['state'] = 'simulated' if result['state'] == 'simulated' else 'unknown'
+                if self.finish(record):
                     break
                 time.sleep(0.1)
             else:
-                record['state'] = 'unknown'
+                return
         except Exception:
             record['state'] = 'unknown'
         self.save(path, record)
         self.remote('/agent/result', record)
         path.unlink()
+
+    def finish(self, record):
+        jobs = request(self.local, '/v1/jobs', self.api_token)['jobs']
+        job = next((item for item in jobs if item['id']==record['local_job_id']),None)
+        if job and job['state']=='starting':
+            return False
+        record['state'] = job['state'] if job and job['state'] in ('simulated','submitted') else 'unknown'
+        return True
 
 
 def main():

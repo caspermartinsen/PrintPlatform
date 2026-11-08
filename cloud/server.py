@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'service'))
 from server import validate as validate_archive
-from print_plan import analyze, select
+from print_plan import analyze, select, live_ready
 
 
 class Platform(HTTPServer):
@@ -28,7 +28,7 @@ class Platform(HTTPServer):
             connection.execute('CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, name TEXT, sha256 TEXT, state TEXT, created REAL)')
             connection.execute('CREATE TABLE IF NOT EXISTS telemetry (id INTEGER PRIMARY KEY, body TEXT, seen REAL)')
             columns = {row[1] for row in connection.execute('PRAGMA table_info(jobs)')}
-            for column in ('analysis', 'selection'):
+            for column in ('analysis', 'selection', 'execution_mode', 'receipt'):
                 if column not in columns:
                     connection.execute('ALTER TABLE jobs ADD COLUMN ' + column + ' TEXT')
         super().__init__(address, Handler)
@@ -116,6 +116,7 @@ class Handler(BaseHTTPRequestHandler):
                 job['analysis'] = json.loads(job['analysis']) if job['analysis'] else analyze(platform.root / (job['id'] + '.gcode.3mf'))
                 job['selection'] = json.loads(job['selection']) if job['selection'] else None
             self.respond(200, {'jobs': jobs, 'agent_online': seen is not None and time.time() - seen < 45,
+                               'live_enabled': os.environ.get('ALLOW_LIVE_PRINT','0') == '1' and telemetry is not None and time.time()-seen < 45 and json.loads(telemetry['body']).get('remote_live_enabled') is True,
                                'last_seen': seen, 'pi': json.loads(telemetry['body']) if telemetry else None})
         elif self.command == 'POST' and self.path == '/api/jobs':
             name = self.headers.get('X-Filename', '')
@@ -158,26 +159,38 @@ class Handler(BaseHTTPRequestHandler):
                         self.respond(409, {'error': 'Pi er offline.'})
                         return
                     analysis = analyze(platform.root / (job_id + '.gcode.3mf'))
+                    execution_mode = payload.get('execution_mode','simulate')
+                    report = json.loads(telemetry['body'])
                     try:
+                        if execution_mode not in ('simulate','live'):
+                            raise ValueError('Ukendt printtilstand.')
                         selection = select(analysis, json.loads(telemetry['body']).get('printer', {}), payload)
+                        if execution_mode == 'live':
+                            if os.environ.get('ALLOW_LIVE_PRINT','0') != '1' or report.get('remote_live_enabled') is not True or report.get('plan_version') != 2 or payload.get('confirm_physical') != 'START PRINT':
+                                raise ValueError('Fysisk printstart er ikke aktiveret eller bekræftet.')
+                            live_ready(analysis, report.get('printer',{}), selection)
                     except ValueError as error:
                         self.respond(409, {'error': str(error)})
                         return
-                    changed = connection.execute("UPDATE jobs SET state='approved',selection=?,analysis=? WHERE id=? AND state='queued'", (json.dumps(selection), json.dumps(analysis), job_id)).rowcount
+                    changed = connection.execute("UPDATE jobs SET state='approved',selection=?,analysis=?,execution_mode=? WHERE id=? AND state='queued'", (json.dumps(selection), json.dumps(analysis), execution_mode, job_id)).rowcount
                 else:
-                    changed = connection.execute("UPDATE jobs SET state='resolved' WHERE id=? AND state IN ('unknown','dispatched')", (job_id,)).rowcount
+                    target = connection.execute('SELECT state FROM jobs WHERE id=?',(job_id,)).fetchone()
+                    if target and target['state']=='submitted' and payload.get('printer_checked_idle') is not True:
+                        raise ValueError('Printer inspection required')
+                    changed = connection.execute("UPDATE jobs SET state='resolved' WHERE id=? AND state IN ('unknown','dispatched','submitted')", (job_id,)).rowcount
             self.respond(200 if changed else 409, {'saved': bool(changed)})
         elif agent and self.command == 'POST' and self.path == '/agent/poll':
             report = json.loads(self.body(262144))
-            if not isinstance(report, dict) or report.get('mode') != 'simulate':
-                raise ValueError('Only simulated execution is enabled in this version')
+            if not isinstance(report, dict) or report.get('mode') not in ('simulate','live'):
+                raise ValueError('Invalid mode')
             with platform.db() as connection:
                 connection.execute('INSERT OR REPLACE INTO telemetry VALUES (1,?,?)', (json.dumps(report), time.time()))
-                active = connection.execute("SELECT 1 FROM jobs WHERE state IN ('dispatched','unknown')").fetchone()
-                job = None if active or report.get('plan_version') != 1 else connection.execute("SELECT * FROM jobs WHERE state='approved' ORDER BY created LIMIT 1").fetchone()
+                active = connection.execute("SELECT 1 FROM jobs WHERE state IN ('dispatched','submitted','unknown')").fetchone()
+                job = None if active or report.get('local_busy') or report.get('plan_version') not in (1,2) else connection.execute("SELECT * FROM jobs WHERE state='approved' AND (COALESCE(execution_mode,'simulate')='simulate' OR ?=1) ORDER BY created LIMIT 1", (int(os.environ.get('ALLOW_LIVE_PRINT','0') == '1' and report.get('remote_live_enabled') is True and report.get('plan_version') == 2),)).fetchone()
                 if job:
                     connection.execute("UPDATE jobs SET state='dispatched' WHERE id=?", (job['id'],))
-            self.respond(200, {'job': dict(job) if job else None})
+                resolutions = [json.loads(row['receipt']).get('local_job_id') for row in connection.execute("SELECT receipt FROM jobs WHERE state='resolved' AND receipt IS NOT NULL")]
+            self.respond(200, {'job': dict(job) if job else None,'resolutions':[item for item in resolutions if item]})
         elif agent and self.command == 'GET' and re.fullmatch(r'/agent/files/[a-f0-9-]{36}', self.path):
             job_id = self.path.split('/')[-1]
             with platform.db() as connection:
@@ -188,10 +201,14 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(200, (platform.root / (job_id + '.gcode.3mf')).read_bytes(), 'application/octet-stream')
         elif agent and self.command == 'POST' and self.path == '/agent/result':
             report = json.loads(self.body())
-            if report['state'] not in ('simulated', 'unknown'):
+            if report['state'] not in ('simulated', 'submitted', 'unknown'):
                 raise ValueError('Invalid state')
             with platform.db() as connection:
-                changed = connection.execute("UPDATE jobs SET state=? WHERE id=? AND state IN ('dispatched', ?)", (report['state'], report['id'], report['state'])).rowcount
+                target = connection.execute('SELECT execution_mode FROM jobs WHERE id=?',(report['id'],)).fetchone()
+                if target and (report['state']=='submitted' and target['execution_mode']!='live' or report['state']=='simulated' and target['execution_mode']=='live'):
+                    raise ValueError('Result does not match approved execution mode')
+                receipt = {'local_job_id':report.get('local_job_id'), 'driver_accepted':report['state']=='submitted'}
+                changed = connection.execute("UPDATE jobs SET state=?,receipt=? WHERE id=? AND state IN ('dispatched', ?)", (report['state'], json.dumps(receipt), report['id'], report['state'])).rowcount
                 if not changed:
                     changed = connection.execute("SELECT 1 FROM jobs WHERE id=? AND state='resolved'", (report['id'],)).fetchone() is not None
             self.respond(200 if changed else 409, {'saved': bool(changed)})

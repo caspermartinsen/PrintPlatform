@@ -15,7 +15,7 @@ import uuid
 import zipfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telemetry import Telemetry
-from print_plan import analyze, select, mapping
+from print_plan import analyze, select, mapping, live_ready
 
 
 ACTIVE = ('starting', 'submitted', 'unknown')
@@ -59,7 +59,7 @@ class Store:
             connection.execute('CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, name TEXT, sha256 TEXT, state TEXT, created REAL)')
             connection.execute("UPDATE jobs SET state='unknown' WHERE state='starting'")
             columns = {row[1] for row in connection.execute('PRAGMA table_info(jobs)')}
-            for column in ('selection', 'plan'):
+            for column in ('selection', 'plan', 'execution_mode'):
                 if column not in columns:
                     connection.execute('ALTER TABLE jobs ADD COLUMN ' + column + ' TEXT')
         for temporary in self.root.glob('*.params.json'):
@@ -87,11 +87,11 @@ class Store:
         with self.db() as connection:
             connection.execute('UPDATE jobs SET state=? WHERE id=?', (state, job_id))
 
-    def start(self, job_id, selection=None):
+    def start(self, job_id, selection=None, execution_mode=None):
         update_lock = (self.root / 'update.lock').open('a')
         try:
             fcntl.flock(update_lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
-            self.reserve(job_id, selection)
+            self.reserve(job_id, selection, execution_mode)
         except (OSError, ValueError):
             update_lock.close()
             raise ValueError('Service is updating or job cannot be started')
@@ -103,14 +103,14 @@ class Store:
         finally:
             update_lock.close()
 
-    def reserve(self, job_id, selection):
+    def reserve(self, job_id, selection, execution_mode):
         with self.db() as connection:
             job = connection.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
             if not job or job['state'] != 'queued':
                 raise ValueError('Job is not queued; never retry an ambiguous start')
             if connection.execute("SELECT 1 FROM jobs WHERE state IN ('starting','submitted','unknown')").fetchone():
                 raise ValueError('Printer reserved; reconcile the active job first')
-            connection.execute("UPDATE jobs SET state='starting',selection=? WHERE id=?", (json.dumps(selection) if selection else None, job_id))
+            connection.execute("UPDATE jobs SET state='starting',selection=?,execution_mode=? WHERE id=?", (json.dumps(selection) if selection else None, execution_mode or os.environ.get('PRINT_MODE','simulate'), job_id))
 
     def run(self, job_id):
         state = 'unknown'
@@ -129,7 +129,7 @@ class Store:
             plan = mapping(selection) if selection else {}
             with self.db() as connection:
                 connection.execute('UPDATE jobs SET plan=? WHERE id=?', (json.dumps(plan), job_id))
-            if os.environ.get('PRINT_MODE', 'simulate') == 'simulate':
+            if (job['execution_mode'] or os.environ.get('PRINT_MODE', 'simulate')) == 'simulate':
                 state = 'simulated'
             else:
                 repo = Path(os.environ['BAMBU_REPO']).resolve()
@@ -216,6 +216,7 @@ class Handler(BaseHTTPRequestHandler):
         store = self.server.store
         if self.command == 'GET' and self.path == '/v1/status':
             self.reply(200, {'mode': os.environ.get('PRINT_MODE', 'simulate'),
+                             'remote_live_enabled': os.environ.get('ALLOW_REMOTE_LIVE','0') == '1' and os.environ.get('PRINT_MODE') == 'live',
                              'printer': self.server.telemetry.snapshot() if hasattr(self.server, 'telemetry') else {'state': 'unknown'},
                              'jobs': store.jobs(), 'automatic_start': False})
         elif self.command == 'GET' and self.path == '/v1/jobs':
@@ -257,10 +258,18 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 temporary.unlink(missing_ok=True)
             self.reply(201, {'id': job_id, 'state': 'queued', 'sha256': digest.hexdigest()})
-        elif self.command == 'POST' and re.fullmatch(r'/v1/jobs/[0-9a-f-]{36}/(start|simulate|resolve)', self.path):
+        elif self.command == 'POST' and re.fullmatch(r'/v1/jobs/[0-9a-f-]{36}/(start|simulate|remote-start|resolve)', self.path):
             payload = json.loads(self.rfile.read(self.body(4096)))
             job_id, action = self.path.split('/')[3:]
-            if action in ('start', 'simulate'):
+            if action in ('start', 'simulate', 'remote-start'):
+                execution_mode = None
+                if action == 'remote-start':
+                    execution_mode = payload.get('execution_mode')
+                    if execution_mode not in ('simulate','live') or not payload.get('selection'):
+                        raise ValueError('Explicit mode and selection required')
+                    if execution_mode == 'live' and (os.environ.get('ALLOW_REMOTE_LIVE','0') != '1' or os.environ.get('PRINT_MODE') != 'live' or payload.get('confirm_physical') != 'START PRINT'):
+                        self.reply(409, {'error':'Physical printing is disabled or not confirmed'})
+                        return
                 if action == 'simulate' and os.environ.get('PRINT_MODE', 'simulate') != 'simulate':
                     self.reply(409, {'error': 'Simulation endpoint refuses live mode'})
                     return
@@ -272,10 +281,12 @@ class Handler(BaseHTTPRequestHandler):
                                        {**choice, 'bed_clear': payload.get('printer_ready'), 'accept_differences': True})
                     if any(selection.get(key) != choice.get(key) for key in ('material', 'name', 'color', 'filament_id')):
                         raise ValueError('AMS contents changed after approval')
+                    if execution_mode == 'live':
+                        live_ready(analyze(store.root / (job_id + '.gcode.3mf')), current, selection)
                 if payload.get('confirm_job_id') != job_id or payload.get('printer_ready') is not True:
                     raise ValueError('Explicit confirmation required')
                 try:
-                    store.start(job_id, selection)
+                    store.start(job_id, selection, execution_mode)
                 except ValueError as error:
                     self.reply(409, {'error': str(error)})
                     return

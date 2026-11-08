@@ -4,10 +4,18 @@ import tempfile
 import unittest
 import zipfile
 
-from print_plan import analyze, select, mapping
+from print_plan import analyze, select, mapping, live_ready
 
 
 class PrintPlanTests(unittest.TestCase):
+    def test_live_requires_idle_matching_profile_and_p2s(self):
+        analysis={'printer_model':'Bambu Lab P2S'}
+        printer={'state':'IDLE','error_code':0}
+        live_ready(analysis,printer,{'warnings':[]})
+        for state in ('RUNNING','PAUSE','FAILED','unknown'):
+            with self.assertRaises(ValueError): live_ready(analysis,{**printer,'state':state},{'warnings':[]})
+        with self.assertRaises(ValueError): live_ready({'printer_model':'Other'},printer,{'warnings':[]})
+        with self.assertRaises(ValueError): live_ready(analysis,printer,{'warnings':['Filamentprofilen afviger.']})
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.path = Path(self.directory.name) / 'model.3mf'

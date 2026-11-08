@@ -1,5 +1,38 @@
 # Dokploy-webapp og Pi-agent
 
+## Klargjort live-funktion (deaktiveret som standard)
+
+Fysisk print kræver alle tre indstillinger: `ALLOW_LIVE_PRINT=1` i Dokploy samt
+`PRINT_MODE=live` og `ALLOW_REMOTE_LIVE=1` i Pi'ens `/etc/print-service/environment`.
+De sættes ikke automatisk af installation eller opdateringer. Aktivér dem først
+efter særskilt aftale om fysisk test og verificering af driveropsætningen.
+Eksisterende simuleringsjob forbliver simulerede, også når live senere aktiveres.
+
+Når begge sider er aktiveret, får hvert jobs dialog et særskilt valg af fysisk
+printstart. Standard er altid simulering. Fysisk start kræver tom-pladebekræftelse,
+AMS-valg og teksten `START PRINT`. Både cloud og Pi kræver IDLE/FINISH, ingen
+rapporteret printerfejl, frisk AMS-status, P2S-slicing og matchende filamentprofil.
+En accepteret farveforskel tillades; materialet og filamentprofilen skal passe.
+En printer der stadig rapporterer FAILED skal kontrolleres og sættes klar på
+printeren; webappen gætter ikke at den er klar.
+
+Agenten gemmer lokalt job-id før startkaldet og følger derefter kun status via GET.
+Ved genstart genoptages statusaflæsningen, ikke printkommandoen. Mistet kvittering
+genafleveres uden ny start. Driverkode 0 bliver `submitted`: **driver har accepteret
+printkommandoen**, ikke dokumentation for færdigt print eller første lag.
+Fejl eller timeout bliver unknown og genforsøges aldrig automatisk.
+
+Submitted reserverer både cloud-kø og lokal kø. Efter fysisk kontrol af færdig/tom
+printer kan **Luk efter kontrol** frigive cloud-jobbet. Agenten frigiver derefter
+den lokale reservation, når printeren rapporterer frisk IDLE/FINISH uden fejl.
+Print slutter ikke automatisk ud fra løs telemetri, fordi den ikke entydigt
+identificerer jobbet. Ingen fjernstop eller automatisk genstart er tilføjet.
+
+Driveren skal være installeret i `/opt/open-bamboo-persano`, kompileret til ABI
+02.05.02, med params i `/etc/print-service/print.params.json` og certifikat på den
+konfigurerede sti. Den eksisterende home-installation bevares. Forberedelse og
+kompilering starter ingen print. Hold live-indstillingerne deaktiveret indtil test.
+
 ## Automatiske Pi-opdateringer
 
 Efter engangsinstallation kan `sudo systemctl enable --now print-updater.timer`
@@ -36,8 +69,8 @@ Lokale kildefiler i `~/PrintPlatform` opdateres ikke; det er den installerede ko
 i `/opt/print-platform/service`, der opdateres.
 
 Frontend og backend kører sammen i én container. Pi'en opretter selv udgående
-HTTPS til cloud og behøver ingen åbne porte. Denne version udfører kun simulerede
-cloud-job; lokal live-tilstand afvises af agenten.
+HTTPS til cloud og behøver ingen åbne porte. Standard er simulering; fysisk
+print kræver den særskilte aktivering beskrevet øverst.
 
 ## Dokploy
 
@@ -88,7 +121,7 @@ sudo systemctl status print-agent --no-pager
 
 Agenten bruger den lokale API-nøgle fra `/etc/print-service/environment`, henter
 opgaver og sender status hvert femte sekund. Kun udgående HTTPS/443 til cloud.
-Pi-API'et forbliver på loopback. `PRINT_MODE=simulate` skal bevares.
+Pi-API'et forbliver på loopback. Bevar `PRINT_MODE=simulate` under udvikling og test.
 
 ## Funktionelt forløb
 
@@ -111,8 +144,8 @@ Godkendt valg gemmes i cloud og lokal database. I simuleringen beregner Pi'en de
 samme `ams_mapping`/`ams_mapping2`-parametre som driveradapteren bruger. Valgt
 AMS-plads vises i køen. Agentens plan-version forhindrer levering til ældre agenter.
 Opdatér både Pi og Dokploy. Ældre uploadede filer analyseres også uden gen-upload.
-Rigtig cloud-printstart er fortsat deaktiveret; næste fysiske test kræver særskilt
-godkendelse og aktivering. Ingen ændring i `PRINT_MODE` foretages af denne opdatering.
+Rigtig cloud-printstart er deaktiveret som standard; næste fysiske test kræver særskilt
+godkendelse og aktivering. Ingen ændring i `PRINT_MODE` foretages af opdateringer.
 
 AMS-kort viser pladser (nummereret fra 1), printerens RGBA-farve, filamentnavn,
 materiale og estimeret restprocent. Tomme pladser markeres kun som tomme, når
@@ -126,12 +159,13 @@ efterfølgende dialog er godkendt. Pi'en henter filen, verificerer SHA-256 og
 udfører lokal simulering. Jobbet ender som **Simulering gennemført**.
 
 Cloud markerer jobbet dispatched før afsendelse og genudsender aldrig automatisk.
-Pi'en skriver et holdbart journalspor før udførelse. Uafklaret udførelse bliver
-unknown efter genstart; færdige resultater genafleveres uden ny udførelse, hvis
+Pi'en skriver et holdbart journalspor før udførelse. Et gemt lokalt job-id følges
+med statusaflæsning efter genstart; uafklaret udførelse uden lokalt id bliver unknown.
+Færdige resultater genafleveres uden ny udførelse, hvis
 kvitteringen går tabt. Dispatched/unknown blokerer nye job og kræver manuel
 gennemgang. Vælg **Luk efter kontrol**, når jobbet er kontrolleret på Pi'en;
 det frigiver køen uden at genstarte eller stoppe jobbet. Ingen automatisk
-køfrigivelse eller fysiske cloud-print i første version.
+køfrigivelse. Fysiske print kræver de særskilte live-indstillinger øverst.
 
 Pi vises offline efter 45 sekunder uden opdatering. Gamle printerfelter skjules.
 Bevar `/data` og Pi'ens `/var/lib/print-agent` ved opdateringer; tab af journal
