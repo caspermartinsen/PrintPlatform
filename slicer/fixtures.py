@@ -49,3 +49,31 @@ def sliced_file(ids=(1,2), colors=('#FF0000','#0000FF')):
         archive.writestr('Metadata/slice_info.config','<config><plate><metadata key="prediction" value="600"/><metadata key="printer_model_id" value="N7"/><metadata key="nozzle_diameters" value="0.4"/>' + filaments + '</plate></config>')
         archive.writestr('Metadata/plate_1.gcode',gcode)
     return output.getvalue()
+
+
+def standard_project_file():
+    import xml.etree.ElementTree as ET
+    safe_xml = ET.fromstring
+    ns={'m':'http://schemas.microsoft.com/3dmanufacturing/core/2015/02'}
+    output=io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(project_file())) as source, zipfile.ZipFile(output,'w') as target:
+        root=safe_xml(source.read('3D/3dmodel.model'))
+        resources=root.find('m:resources',ns)
+        palette=ET.SubElement(resources,'{'+ns['m']+'}basematerials',id='10')
+        for color in ('#151515FF','#2879E8FF'):
+            ET.SubElement(palette,'{'+ns['m']+'}base',name='Color',displaycolor=color)
+        for index,item in enumerate(resources.findall('m:object',ns)):
+            item.set('pid','10');item.set('pindex',str(index))
+            for vertex in item.findall('m:mesh/m:vertices/m:vertex',ns):
+                vertex.set('x',str(float(vertex.get('x'))-4))
+                vertex.set('y',str(float(vertex.get('y'))-4))
+        assembly=ET.SubElement(resources,'{'+ns['m']+'}object',id='3',type='model')
+        components=ET.SubElement(assembly,'{'+ns['m']+'}components')
+        for object_id in ('1','2'):
+            ET.SubElement(components,'{'+ns['m']+'}component',objectid=object_id,transform='1 0 0 0 1 0 0 0 1 '+('12' if object_id=='2' else '0')+' 0 0')
+        build=root.find('m:build',ns);build.clear()
+        ET.SubElement(build,'{'+ns['m']+'}item',objectid='3')
+        for name in source.namelist():
+            if name.startswith('Metadata/'):continue
+            target.writestr(name,ET.tostring(root) if name=='3D/3dmodel.model' else source.read(name))
+    return output.getvalue()

@@ -1,3 +1,4 @@
+import io
 import hashlib
 import json
 import os
@@ -66,7 +67,10 @@ def run_slice(data, options, destination, profiles, binary):
     destination.mkdir(parents=True,exist_ok=True)
     project = options.get('source_kind','stl') == '3mf'
     model = destination / ('model.3mf' if project else 'model.stl')
+    standard = False
     if project:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            standard = 'Metadata/model_settings.config' not in archive.namelist()
         prepare_project(data,model,selected)
     else:
         if len(selected) != 1:
@@ -87,7 +91,7 @@ def run_slice(data, options, destination, profiles, binary):
         filament_paths.append(str(filament_path))
     command = [str(binary),'--datadir',str(destination / 'config'),'--load-settings',
         str(profiles / 'machine.json')+';'+str(process_path),'--load-filaments',';'.join(filament_paths),
-        '--curr-bed-type','Textured PEI Plate','--arrange','0' if project else '1','--ensure-on-bed',
+        '--curr-bed-type','Textured PEI Plate','--arrange','0' if project and not standard else '1','--ensure-on-bed',
         '--slice','1','--export-3mf','result.gcode.3mf','--outputdir',str(destination),str(model)]
     if project:
         with zipfile.ZipFile(model) as archive:

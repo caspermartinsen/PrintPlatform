@@ -124,3 +124,7 @@ angivet som standardens `basematerials` på de enkelte mesh-dele. Platformen
 opretter filamenttildelinger og bevarer geometri og samlinger. Vælg den ønskede
 PLA-spole for hver farve. Flere materialer inden for samme mesh kræver opdeling
 i farvede dele eller eksport som et Bambu Studio-projekt.
+
+Standard-3MF-filer arrangeres samlet på byggepladen inden slicing, så modeller
+omkring koordinatnul også kan printes. Delene beholder deres indbyrdes placering
+og farver. Bambu-projekter med eksisterende pladeplacering bevarer den fortsat.

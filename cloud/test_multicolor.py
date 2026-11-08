@@ -210,28 +210,8 @@ class MultiColorTests(unittest.TestCase):
 
 class StandardMaterialTests(unittest.TestCase):
     def standard_file(self):
-        from cloud.model_files import safe_xml
-        import xml.etree.ElementTree as ET
-        ns={'m':'http://schemas.microsoft.com/3dmanufacturing/core/2015/02'}
-        output=io.BytesIO()
-        with zipfile.ZipFile(io.BytesIO(project_file())) as source, zipfile.ZipFile(output,'w') as target:
-            root=safe_xml(source.read('3D/3dmodel.model'))
-            resources=root.find('m:resources',ns)
-            palette=ET.SubElement(resources,'{'+ns['m']+'}basematerials',id='10')
-            for color in ('#151515FF','#2879E8FF'):
-                ET.SubElement(palette,'{'+ns['m']+'}base',name='Color',displaycolor=color)
-            for index,item in enumerate(resources.findall('m:object',ns)):
-                item.set('pid','10');item.set('pindex',str(index))
-            assembly=ET.SubElement(resources,'{'+ns['m']+'}object',id='3',type='model')
-            components=ET.SubElement(assembly,'{'+ns['m']+'}components')
-            for object_id in ('1','2'):
-                ET.SubElement(components,'{'+ns['m']+'}component',objectid=object_id)
-            build=root.find('m:build',ns);build.clear()
-            ET.SubElement(build,'{'+ns['m']+'}item',objectid='3')
-            for name in source.namelist():
-                if name.startswith('Metadata/'):continue
-                target.writestr(name,ET.tostring(root) if name=='3D/3dmodel.model' else source.read(name))
-        return output.getvalue()
+        from slicer.fixtures import standard_project_file
+        return standard_project_file()
 
     def test_standard_materials_become_part_filaments_without_changing_model(self):
         from cloud.model_files import safe_xml
@@ -257,3 +237,25 @@ class StandardMaterialTests(unittest.TestCase):
                 if name=='3D/3dmodel.model':content=content.replace(b'pid="10"',b'pid="999"')
                 target.writestr(name,content)
         with self.assertRaises(ValueError):project_info(output.getvalue())
+
+    def test_standard_projects_arrange_as_assembly_but_native_projects_keep_placement(self):
+        from unittest.mock import MagicMock
+        from slicer.worker import run_slice
+        from cloud.test_slicing import result_file
+        options={'source_kind':'3mf','layer_height':0.2,'infill':15,'filaments':[
+            {'filament_id':index+1,'profile':'pla-basic','profile_name':'PLA Basic','color':color}
+            for index,color in enumerate(('#151515','#2879E8'))]}
+        for data,arrange in ((self.standard_file(),'1'),(project_file(),'0')):
+            with self.subTest(arrange=arrange), tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);profiles=root/'profiles';profiles.mkdir()
+                (profiles/'process.json').write_text('{}')
+                (profiles/'pla-basic.json').write_text('{}')
+                output=root/'output';output.mkdir()
+                (output/'result.gcode.3mf').write_bytes(result_file())
+                child=MagicMock();child.__enter__.return_value=child;child.wait.return_value=0
+                with patch('slicer.worker.subprocess.Popen',return_value=child) as launch:
+                    run_slice(data,options,output,profiles,'fake-slicer')
+                command=launch.call_args.args[0]
+                self.assertEqual(command[command.index('--arrange')+1],arrange)
+                with zipfile.ZipFile(output/'model.3mf') as prepared, zipfile.ZipFile(io.BytesIO(data)) as original:
+                    self.assertEqual(prepared.read('3D/3dmodel.model'),original.read('3D/3dmodel.model'))
