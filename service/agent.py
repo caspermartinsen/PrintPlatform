@@ -65,11 +65,13 @@ class Agent:
             return self.work()
 
     def work(self):
+        awaiting = False
         for path in self.root.glob('*.json'):
             record = json.loads(path.read_text())
             if record['state'] == 'awaiting':
                 if not self.finish(record):
-                    return
+                    awaiting = True
+                    continue
                 self.save(path, record)
             if record['state'] == 'pending':
                 record['state'] = 'unknown'
@@ -80,12 +82,14 @@ class Agent:
         if status.get('mode') not in ('simulate','live'):
             raise ValueError('Unknown local mode')
         response = self.remote('/agent/poll', {'mode': status['mode'], 'remote_live_enabled':status.get('remote_live_enabled',False),
-            'local_busy':any(item['state'] in ('starting','submitted','unknown') for item in status['jobs']), 'plan_version': 2, 'printer': status['printer']})
+            'local_busy':awaiting or any(item['state'] in ('starting','submitted','unknown') for item in status['jobs']), 'plan_version': 2, 'printer': status['printer']})
         for local_id in response.get('resolutions',[]):
             local_job = next((item for item in status['jobs'] if item['id']==local_id),None)
             printer = status['printer']
             if local_job and local_job['state'] in ('submitted','unknown') and printer_available(printer):
                 request(self.local,'/v1/jobs/'+local_id+'/resolve',self.api_token,{'printer_checked_idle':True})
+        if awaiting:
+            return
         job = response['job']
         if job is None:
             return

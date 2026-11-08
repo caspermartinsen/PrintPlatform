@@ -245,3 +245,6 @@ node --test frontend/app.test.cjs
 
 GitHub Actions kører desuden de eksisterende HTTP-tests på Python 3.11 og 3.13,
 frontend-build og webcontainer-build. De starter ingen fysiske print.
+
+Agenten fortsætter med at sende printerstatus, mens den afventer driverens resultat.
+Et afventende journalført job holder køen optaget og sender ingen ny startkommando.

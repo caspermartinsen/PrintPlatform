@@ -13,6 +13,7 @@ from urllib.parse import quote
 
 from cloud.server import Platform, Handler
 from cloud.test_slicing import model, result_file
+from service.agent import Agent
 from server import Handler as PiHandler, Store, upload_name
 
 
@@ -246,3 +247,20 @@ class RegressionTests(unittest.TestCase):
                 reslice = pool.submit(self.call, '/api/jobs/' + job_id + '/slice', options)
                 codes = approve.result()[0], reslice.result()[0]
             self.assertIn(codes, ((200,409),(409,202)))
+
+    def test_agent_keeps_reporting_status_while_awaiting_driver(self):
+        agent = Agent(self.directory.name + '/agent', 'https://test', 'agent-token', 'http://local', 'local-token')
+        path = agent.root / (str(uuid.uuid4()) + '.json')
+        record = {'id':path.stem, 'local_job_id':str(uuid.uuid4()), 'state':'awaiting'}
+        agent.save(path, record)
+        status = {'mode':'simulate','jobs':[{'id':record['local_job_id'],'state':'starting'}], 'printer':{'state':'PREPARE'}}
+        try:
+            with patch.object(agent, 'finish', return_value=False), patch('service.agent.request', return_value=status), patch.object(agent, 'remote', return_value={'job':None, 'resolutions':[]}) as remote:
+                agent.tick()
+            self.assertEqual(remote.call_count, 1)
+            self.assertEqual(remote.call_args[0][0], '/agent/poll')
+            self.assertTrue(remote.call_args[0][1]['local_busy'])
+            self.assertEqual(remote.call_args[0][1]['printer']['state'], 'PREPARE')
+            self.assertEqual(json.loads(path.read_text())['state'], 'awaiting')
+        finally:
+            agent.lock.close()
