@@ -13,8 +13,11 @@ import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'service'))
+sys.path.insert(1, str(Path(__file__).resolve().parents[1]))
 from server import validate as validate_archive, safe_diagnostics
 from print_plan import analyze, select, live_ready
+from cloud.model_files import stl_info
+from cloud import slicing
 
 
 class Platform(HTTPServer):
@@ -28,9 +31,12 @@ class Platform(HTTPServer):
             connection.execute('CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, name TEXT, sha256 TEXT, state TEXT, created REAL)')
             connection.execute('CREATE TABLE IF NOT EXISTS telemetry (id INTEGER PRIMARY KEY, body TEXT, seen REAL)')
             columns = {row[1] for row in connection.execute('PRAGMA table_info(jobs)')}
-            for column in ('analysis', 'selection', 'execution_mode', 'receipt'):
+            for column in ('analysis', 'selection', 'execution_mode', 'receipt','model_info','slice_options','slice_token','slice_error'):
                 if column not in columns:
                     connection.execute('ALTER TABLE jobs ADD COLUMN ' + column + ' TEXT')
+            if 'preview_ready' not in columns:
+                connection.execute('ALTER TABLE jobs ADD COLUMN preview_ready INTEGER DEFAULT 0')
+            connection.execute('CREATE TABLE IF NOT EXISTS slicer_health (id INTEGER PRIMARY KEY, seen REAL)')
         super().__init__(address, Handler)
 
     @contextlib.contextmanager
@@ -87,40 +93,51 @@ class Handler(BaseHTTPRequestHandler):
         if self.command == 'GET' and self.path == '/healthz':
             self.respond(200, {'ok': True})
             return
+        slicer = self.path.startswith('/slicer/')
         agent = self.path.startswith('/agent/')
-        expected = self.server.agent_auth if agent else self.server.browser_auth
+        expected = ('Bearer ' + os.environ.get('SLICER_TOKEN','')) if slicer else self.server.agent_auth if agent else self.server.browser_auth
+        if slicer and len(os.environ.get('SLICER_TOKEN','')) < 32:
+            self.respond(503, {'error':'Sliceren er ikke konfigureret.'})
+            return
         if not hmac.compare_digest(self.headers.get('Authorization', ''), expected):
             self.respond(401, {'error': 'Login required'}, challenge=not agent)
             return
-        if self.command == 'POST' and not agent and self.headers.get('Origin') != self.server.public_url:
+        if self.command == 'POST' and not agent and not slicer and self.headers.get('Origin') != self.server.public_url:
             self.respond(403, {'error': 'Origin rejected'})
             return
         try:
             self.route(agent)
-        except (ValueError, TypeError, KeyError):
-            self.respond(400, {'error': 'Invalid request'})
+        except (ValueError, TypeError, KeyError) as error:
+            self.respond(400, {'error': str(error) if isinstance(error,ValueError) else 'Invalid request'})
         except (OSError, sqlite3.Error):
             self.respond(503, {'error': 'Storage unavailable'})
 
     def route(self, agent):
         platform = self.server
-        if self.command == 'GET' and not agent and self.path in ('/', '/app.js', '/style.css'):
-            name, mime = {'/': ('index.html', 'text/html; charset=utf-8'), '/app.js': ('app.js', 'application/javascript'), '/style.css': ('style.css', 'text/css')}[self.path]
+        if slicing.route(self):
+            return
+        if self.command == 'GET' and not agent and self.path in ('/', '/app.js', '/style.css','/preview.js'):
+            name, mime = {'/': ('index.html', 'text/html; charset=utf-8'), '/app.js': ('app.js', 'application/javascript'), '/style.css': ('style.css', 'text/css'),'/preview.js':('built/preview.js','application/javascript')}[self.path]
             self.respond(200, (Path(__file__).parents[1] / 'frontend' / name).read_bytes(), mime)
         elif self.command == 'GET' and self.path == '/api/status':
             with platform.db() as connection:
                 jobs = [dict(row) for row in connection.execute('SELECT * FROM jobs ORDER BY created DESC LIMIT 1000')]
                 telemetry = connection.execute('SELECT * FROM telemetry WHERE id=1').fetchone()
+                slicer_health = connection.execute('SELECT seen FROM slicer_health WHERE id=1').fetchone()
             seen = telemetry['seen'] if telemetry else None
             for job in jobs:
-                job['analysis'] = json.loads(job['analysis']) if job['analysis'] else analyze(platform.root / (job['id'] + '.gcode.3mf'))
+                job['analysis'] = json.loads(job['analysis']) if job['analysis'] else analyze(platform.root / (job['id'] + '.gcode.3mf')) if job['sha256'] else {'supported':False,'reason':'Afventer slicing.','filaments':[]}
                 job['selection'] = json.loads(job['selection']) if job['selection'] else None
+                for field in ('model_info','slice_options'):
+                    job[field] = json.loads(job[field]) if job[field] else None
+                job.pop('slice_token',None)
             self.respond(200, {'jobs': jobs, 'agent_online': seen is not None and time.time() - seen < 45,
+                               'slicer_online':slicer_health is not None and time.time()-slicer_health['seen'] < 45,
                                'live_enabled': os.environ.get('ALLOW_LIVE_PRINT','0') == '1' and telemetry is not None and time.time()-seen < 45 and json.loads(telemetry['body']).get('remote_live_enabled') is True,
                                'last_seen': seen, 'pi': json.loads(telemetry['body']) if telemetry else None})
         elif self.command == 'POST' and self.path == '/api/jobs':
             name = self.headers.get('X-Filename', '')
-            if not re.fullmatch(r'[A-Za-z0-9_. -]{1,120}\.gcode\.3mf', name):
+            if not re.fullmatch(r'[A-Za-z0-9_. -]{1,120}\.(?:gcode\.3mf|stl)', name, re.IGNORECASE):
                 raise ValueError('Filename')
             with platform.db() as connection:
                 count = connection.execute('SELECT COUNT(*) FROM jobs').fetchone()[0]
@@ -128,21 +145,26 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond(507, {'error': 'Storage quota reached'})
                 return
             job_id = str(uuid.uuid4())
-            path = platform.root / (job_id + '.gcode.3mf')
+            is_model = name.lower().endswith('.stl')
+            path = platform.root / (job_id + ('.stl' if is_model else '.gcode.3mf'))
             try:
-                data = self.body(100 * 1024**2)
+                data = self.body((50 if is_model else 100) * 1024**2)
                 with path.open('xb') as target:
                     target.write(data)
                     target.flush()
                     os.fsync(target.fileno())
-                validate_archive(path)
+                model_info = stl_info(data) if is_model else None
+                if not is_model:
+                    validate_archive(path)
                 digest = hashlib.sha256(data).hexdigest()
+                if model_info:
+                    model_info['sha256']=digest
                 with platform.db() as connection:
-                    connection.execute('INSERT INTO jobs (id,name,sha256,state,created,analysis) VALUES (?,?,?,?,?,?)', (job_id, name, digest, 'queued', time.time(), json.dumps(analyze(path))))
+                    connection.execute('INSERT INTO jobs (id,name,sha256,state,created,analysis,model_info) VALUES (?,?,?,?,?,?,?)', (job_id, name, None if is_model else digest, 'model' if is_model else 'queued', time.time(), None if is_model else json.dumps(analyze(path)), json.dumps(model_info) if is_model else None))
             except Exception:
                 path.unlink(missing_ok=True)
                 raise
-            self.respond(201, {'id': job_id})
+            self.respond(201, {'id': job_id,'state':'model' if is_model else 'queued'})
         elif self.command == 'POST' and re.fullmatch(r'/api/jobs/[a-f0-9-]{36}/(approve|resolve)', self.path):
             job_id = self.path.split('/')[3]
             payload = json.loads(self.body())
@@ -159,6 +181,8 @@ class Handler(BaseHTTPRequestHandler):
                         self.respond(409, {'error': 'Pi er offline.'})
                         return
                     analysis = analyze(platform.root / (job_id + '.gcode.3mf'))
+                    if job['model_info'] and payload.get('preview_checked') is not True:
+                        raise ValueError('Bekræft at du har kontrolleret det slicede preview.')
                     execution_mode = payload.get('execution_mode','simulate')
                     report = json.loads(telemetry['body'])
                     try:
@@ -190,7 +214,10 @@ class Handler(BaseHTTPRequestHandler):
                 if job:
                     connection.execute("UPDATE jobs SET state='dispatched' WHERE id=?", (job['id'],))
                 resolutions = [json.loads(row['receipt']).get('local_job_id') for row in connection.execute("SELECT receipt FROM jobs WHERE state='resolved' AND receipt IS NOT NULL")]
-            self.respond(200, {'job': dict(job) if job else None,'resolutions':[item for item in resolutions if item]})
+            command = dict(job) if job else None
+            if command and command.get('model_info'):
+                command['name'] = Path(command['name']).stem + '.gcode.3mf'
+            self.respond(200, {'job': command,'resolutions':[item for item in resolutions if item]})
         elif agent and self.command == 'GET' and re.fullmatch(r'/agent/files/[a-f0-9-]{36}', self.path):
             job_id = self.path.split('/')[-1]
             with platform.db() as connection:

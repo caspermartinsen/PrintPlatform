@@ -56,9 +56,9 @@ class PlatformTests(unittest.TestCase):
         self.local.store.lock.close()
         self.directory.cleanup()
 
-    def browser(self, path, body=None, origin='http://test'):
+    def browser(self, path, body=None, origin='http://test', filename='test.gcode.3mf'):
         headers = {'Authorization': self.platform.browser_auth, 'Origin': origin,
-                   'X-Filename': 'test.gcode.3mf'}
+                   'X-Filename': filename}
         message = urllib.request.Request(self.cloud_url + path, data=body, headers=headers)
         with urllib.request.urlopen(message) as response:
             return json.load(response)
@@ -204,6 +204,59 @@ class PlatformTests(unittest.TestCase):
                             'local-token',{**payload,'confirm_physical':confirmation})
                 self.assertEqual(error.exception.code,409)
                 launch.assert_not_called()
+
+    def model_upload(self):
+        from cloud.test_slicing import model
+        return self.browser('/api/jobs',model(),filename='cube.stl')['id']
+
+    def test_stl_slice_preview_never_approves_print(self):
+        from cloud.test_slicing import result_file
+        from slicer.worker import Worker
+        token='slicer-test-token-at-least-32-characters'
+        with patch.dict('os.environ',{'SLICER_TOKEN':token,'SLICER_ALLOW_INTERNAL_HTTP':'1'}):
+            job_id=self.model_upload()
+            self.agent.tick()
+            options={'ams_id':0,'slot':1,'layer_height':0.2,'infill':15}
+            self.browser('/api/jobs/'+job_id+'/slice',json.dumps(options).encode())
+            worker=Worker(self.cloud_url,token,self.directory.name,'/fake')
+            def fake_slice(data,options,destination,profiles,binary):
+                path=destination/'result.gcode.3mf';path.write_bytes(result_file());return path
+            with patch('slicer.worker.run_slice',side_effect=fake_slice):
+                worker.tick()
+            status=self.browser('/api/status')
+            job=status['jobs'][0]
+            self.assertEqual(job['state'],'queued')
+            self.assertTrue(job['analysis']['supported'])
+            self.assertTrue(job['preview_ready'])
+            self.assertNotIn('slice_token',job)
+            preview=self.browser('/api/jobs/'+job_id+'/preview')
+            self.assertEqual(preview['filament_grams'],1.2)
+            self.assertEqual(preview['segment_count'],2)
+            self.agent.tick()
+            self.assertEqual(self.local.store.jobs(),[])
+            payload={'confirm_job_id':job_id,'ams_id':0,'slot':1,'bed_clear':True,'accept_differences':True}
+            with self.assertRaises(urllib.error.HTTPError):
+                self.browser('/api/jobs/'+job_id+'/approve',json.dumps(payload).encode())
+            self.browser('/api/jobs/'+job_id+'/approve',json.dumps({**payload,'preview_checked':True}).encode())
+            with patch('server.subprocess.Popen',side_effect=AssertionError('Only simulation')):
+                self.agent.tick()
+            self.assertEqual(self.browser('/api/status')['jobs'][0]['state'],'simulated')
+
+    def test_stale_slice_result_cannot_replace_new_attempt(self):
+        from cloud.test_slicing import result_file
+        from slicer.worker import Worker
+        token='slicer-test-token-at-least-32-characters'
+        with patch.dict('os.environ',{'SLICER_TOKEN':token,'SLICER_ALLOW_INTERNAL_HTTP':'1'}):
+            job_id=self.model_upload();self.agent.tick()
+            options=json.dumps({'ams_id':0,'slot':1,'layer_height':0.2,'infill':15}).encode()
+            self.browser('/api/jobs/'+job_id+'/slice',options)
+            worker=Worker(self.cloud_url,token,self.directory.name,'/fake')
+            old=worker.request('/slicer/poll',{})['job']
+            self.browser('/api/jobs/'+job_id+'/slice',options)
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                worker.request('/slicer/jobs/'+job_id+'/result',result_file(),headers={'X-Slice-Token':old['slice_token']})
+            self.assertEqual(error.exception.code,409)
+            self.assertEqual(self.browser('/api/status')['jobs'][0]['state'],'slice_queued')
 
     def test_restart_with_pending_journal_is_unknown(self):
         job_id = self.upload()

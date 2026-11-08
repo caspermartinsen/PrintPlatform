@@ -106,3 +106,15 @@ test('live button blocks conflicting profiles but simulation remains possible',a
   mode.value='simulate'; mode.onchange();
   assert.equal(view.submit.disabled,false);
 });
+
+test('STL jobs send the separate preview confirmation',async()=>{
+  let sent;
+  const view=setup(async(path,options)=>{sent=JSON.parse(options.body);return {ok:true,json:async()=>({saved:true})};});
+  view.job.model_info={dimensions_mm:[10,10,10]};
+  await choose(view);
+  for(const node of view.all)if(node.type==='checkbox' && node.required)node.checked=true;
+  await view.form.onsubmit(view.event(view.submit));
+  assert.equal(sent.preview_checked,true);
+  assert.equal(sent.bed_clear,true);
+  assert.equal(sent.execution_mode,'simulate');
+});

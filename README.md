@@ -1,5 +1,12 @@
 # Printplatform til Raspberry Pi 3 / Debian 13
 
+## STL-upload, slicing og preview
+
+Webappen understøtter STL-upload, drejeligt 3D-preview og serverbaseret slicing
+til P2S via en separat Docker-worker. Resultatet har lag-preview, estimeret tid og
+filamentforbrug og skal godkendes særskilt før print.
+Se [opsætning af slicer i Dokploy](slicer/README.md). Pi-installationen ændres ikke.
+
 ## Webapp i Dokploy (første funktionelle version)
 
 Repo-roden indeholder nu Dockerfile til en samlet frontend/cloud-backend.

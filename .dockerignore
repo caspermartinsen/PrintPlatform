@@ -7,3 +7,5 @@
 **/*.gcode.3mf
 **/environment
 .DS_Store
+**/node_modules
+**/built

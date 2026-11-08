@@ -1,7 +1,14 @@
 const element = id => document.getElementById(id);
 const labels = {queued:'Afventer godkendelse',approved:'Klar til Pi',dispatched:'Sendt til Pi',submitted:'Driver har accepteret printkommandoen – afventer kontrol',simulated:'Simulering gennemført',unknown:'Kræver gennemgang',resolved:'Gennemgået og lukket'};
+Object.assign(labels,{model:'Klar til slicing',slice_queued:'Afventer slicer',slicing:'Slicer modellen',slice_failed:'Slicing fejlede'});
 let latestPrinter = null;
 let liveEnabled = false;
+let modelJobs = [];
+let selectedModel = null;
+let previewWidget = null;
+let previewKey = '';
+let previewRequest = 0;
+let previewController = null;
 async function api(path, options = {}) {
   const response = await fetch(path, options);
   const body = await response.json();
@@ -67,10 +74,13 @@ async function approve(job) {
   mode.onchange = () => { modeChanged(); choice.onchange(); };
   const bed = document.createElement('input'); bed.type = 'checkbox'; bed.required = true;
   const bedLabel = document.createElement('label'); bedLabel.className = 'check-label'; bedLabel.append(bed, document.createTextNode('Jeg har kontrolleret, at byggepladen er tom.'));
+  const previewChecked = document.createElement('input'); previewChecked.type='checkbox'; previewChecked.required=Boolean(job.model_info);
+  const previewLabel = document.createElement('label'); previewLabel.className='check-label'; previewLabel.hidden=!job.model_info;
+  previewLabel.append(previewChecked,document.createTextNode('Jeg har kontrolleret det slicede preview og indstillingerne.'));
   const hint = document.createElement('p'); hint.textContent = 'Kun samme materialetype kan vælges. Tomme eller ukendte pladser vises ikke. Kontrollér den valgte plads før godkendelse.';
   differencesLabel.hidden = true;
   const errorMessage = document.createElement('div'); errorMessage.id = 'approval-error'; errorMessage.className = 'plan-warning'; errorMessage.setAttribute('role','alert'); errorMessage.tabIndex=-1;
-  controls.append(modeLabel,mode,requirement, label, choice, hint, warning, differencesLabel, bedLabel,physicalLabel,physical,errorMessage);
+  controls.append(modeLabel,mode,requirement, label, choice, hint, warning, differencesLabel, previewLabel,bedLabel,physicalLabel,physical,errorMessage);
   element('approvalName').after(controls);
   dialog.returnValue = 'cancel';
   dialog.showModal();
@@ -82,7 +92,7 @@ async function approve(job) {
     if (!form.reportValidity()) return;
     submitting=true; submit.disabled=true; cancel.disabled=true; errorMessage.textContent='Godkendelsen sendes…';
     try {
-      await api(`/api/jobs/${job.id}/approve`, {method:'POST', headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm_job_id:job.id,...JSON.parse(choice.value),bed_clear:bed.checked,accept_differences:differences.checked,execution_mode:mode.value,confirm_physical:physical.value})});
+      await api(`/api/jobs/${job.id}/approve`, {method:'POST', headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm_job_id:job.id,...JSON.parse(choice.value),bed_clear:bed.checked,preview_checked:previewChecked.checked,accept_differences:differences.checked,execution_mode:mode.value,confirm_physical:physical.value})});
       dialog.close('approve');
       await refresh();
     } catch (error) {
@@ -118,11 +128,13 @@ async function refresh() {
   try {
     const data = await api('/api/status');
     const printer = data.pi?.printer;
+    modelJobs = data.jobs;
     liveEnabled = data.live_enabled === true;
     document.querySelector('.notice').textContent = liveEnabled ? 'Fysisk print er aktiveret. Hvert job kræver valg af handling og særskilt bekræftelse.' : 'Simulering er aktiv. Godkendte job gennemløber køen uden at starte fysiske print.';
     latestPrinter = data.agent_online ? printer : null;
     renderAMS(printer, data.agent_online);
     const fresh = data.agent_online && printer?.connected && !printer.stale;
+    if (element('model-workspace')) refreshModels(data);
     element('connection').textContent = data.agent_online ? 'Pi online' : 'Pi offline';
     element('connection').className = `badge ${data.agent_online ? 'online' : ''}`;
     element('state').textContent = fresh ? printer.state : 'Afventer frisk printerstatus';
@@ -137,6 +149,10 @@ async function refresh() {
       const name = document.createElement('strong'); name.textContent = job.name;
       const state = document.createElement('small'); state.textContent = `${labels[job.state] || job.state} · ${new Date(job.created * 1000).toLocaleString('da-DK')}`;
       details.append(name, state); row.append(details);
+      if (job.model_info) {
+        const modelButton=document.createElement('button'); modelButton.className='secondary'; modelButton.textContent=job.preview_ready?'Vis model og slicet preview':'Åbn model og slice'; modelButton.onclick=()=>openModel(job.id); row.append(modelButton);
+        const size=document.createElement('small'); size.textContent=`Model: ${job.model_info.dimensions_mm.join(' × ')} mm`; details.append(size);
+      }
       const analysis = document.createElement('small');
       analysis.textContent = job.analysis?.supported ? `1 anvendt filament · ${job.analysis.filaments[0].material} · ${job.analysis.filaments[0].profile || 'Ukendt profil'}` : job.analysis?.reason || 'Filanalyse ukendt';
       details.append(analysis);
@@ -175,12 +191,87 @@ async function refresh() {
 }
 element('upload').addEventListener('submit', async event => {
   event.preventDefault(); const file = element('file').files[0];
-  if (!file || !file.name.endsWith('.gcode.3mf') || file.size > 100 * 1024 ** 2) { element('message').textContent = 'Vælg en .gcode.3mf-fil på højst 100 MiB.'; return; }
+  const isModel=file?.name.toLowerCase().endsWith('.stl');
+  if (!file || (!isModel && !file.name.toLowerCase().endsWith('.gcode.3mf')) || file.size > (isModel?50:100) * 1024 ** 2) { element('message').textContent = 'Vælg STL (maks. 50 MiB) eller .gcode.3mf (maks. 100 MiB).'; return; }
   element('uploadButton').disabled = true; element('message').textContent = 'Uploader…';
   try {
-    await api('/api/jobs', {method:'POST', headers:{'X-Filename':file.name},body:file});
-    element('message').textContent = 'Filen er i køen og afventer godkendelse.'; element('upload').reset(); await refresh();
+    const uploaded=await api('/api/jobs', {method:'POST', headers:{'X-Filename':file.name},body:file});
+    element('message').textContent = isModel?'Modellen er uploadet. Vælg filament og slice den.':'Filen er i køen og afventer godkendelse.'; element('upload').reset(); await refresh();
+    if (isModel) await openModel(uploaded.id);
   } catch (error) { element('message').textContent = error.message; }
   finally { element('uploadButton').disabled = false; }
 });
+
+async function showGeometry(job,kind) {
+  const requestId=++previewRequest;
+  previewController?.abort(); previewController=new AbortController();
+  const controller=previewController;
+  if (previewWidget) {previewWidget.dispose();previewWidget=null;}
+  element('model-preview').textContent='Indlæser 3D-preview…';
+  element('layer-controls').hidden=true;
+  try {
+    const module=await import('/preview.js');
+    const widget=await module.mount(element('model-preview'),`/api/jobs/${job.id}/${kind==='model'?'model':'preview'}`,kind,controller.signal);
+    if (requestId!==previewRequest) {widget.dispose();return;}
+    previewWidget=widget;
+    if (kind==='sliced') {
+      const data=widget.data;
+      element('layer-controls').hidden=false;
+      const slider=element('preview-layer'); slider.max=data.layers.length; slider.value=data.layers.length;
+      const update=()=>{const index=Number(slider.value)-1;widget.setLayer(index);element('layer-label').textContent=`Lag ${index+1} / ${data.layers.length} · Z ${data.layers[index].z} mm`;};
+      slider.oninput=update; update();
+      element('slice-estimate').textContent=`Ca. ${Math.ceil(data.estimated_seconds/60)} min · ${data.filament_grams} g filament${data.omitted_segments?' · Preview er forenklet; enkelte baner er udeladt.':''}`;
+    }
+  } catch (error) {if(requestId===previewRequest)element('model-preview').textContent='3D-preview kunne ikke vises: '+error.message;}
+}
+
+async function openModel(jobId) {
+  const job=modelJobs.find(item=>item.id===jobId); if(!job)return;
+  selectedModel=jobId; previewKey=''; element('model-workspace').hidden=false;
+  element('model-name').textContent=`${job.name} · ${job.model_info.dimensions_mm.join(' × ')} mm`;
+  const slots=element('slice-slot');slots.replaceChildren();
+  for(const slot of latestPrinter?.ams_slots || []) {
+    if(slot.present!==true || slot.stale || !['PLA Basic','PLA Matte','PLA Translucent'].includes(slot.name))continue;
+    const option=document.createElement('option');option.value=JSON.stringify({ams_id:slot.ams_id,slot:slot.slot});option.textContent=`AMS ${slot.ams_id+1}, plads ${slot.slot} · ${slot.name}`;slots.append(option);
+  }
+  if(!slots.children.length){const option=document.createElement('option');option.value='';option.textContent='Afventer frisk AMS-status';slots.append(option);}
+  if(job.slice_options){element('slice-layer').value=job.slice_options.layer_height;element('slice-infill').value=job.slice_options.infill;slots.value=JSON.stringify({ams_id:job.slice_options.ams_id,slot:job.slice_options.slot});}
+  previewKey=job.preview_ready?job.sha256:'model';
+  await showGeometry(job,job.preview_ready?'sliced':'model');
+  element('model-workspace').scrollIntoView({behavior:'smooth',block:'start'});
+}
+
+function refreshModels(data) {
+  element('slicer-status').textContent=data.slicer_online?'Slicer online':'Slicer offline / ikke konfigureret';
+  const job=data.jobs.find(item=>item.id===selectedModel);if(!job)return;
+  const busy=['slicing','slice_queued'].includes(job.state);
+  element('slice-button').disabled=busy || !['model','slice_failed','queued'].includes(job.state);
+  if(element('retry-slice')) element('retry-slice').hidden=!busy;
+  if(element('show-sliced')) element('show-sliced').disabled=!job.preview_ready;
+  element('slice-message').textContent=job.state==='slicing'?'Slicer modellen…':job.state==='slice_queued'?'Venter på slicer…':job.state==='slice_failed'?`Slicing fejlede (${job.slice_error}). Kontrollér modellen og prøv igen.`:job.preview_ready?'Slicing klar. Kontrollér lagene og godkend derefter jobbet i køen.':'';
+  element('download-sliced').hidden=!job.preview_ready;
+  element('download-sliced').href=`/api/jobs/${job.id}/sliced-file`;element('download-sliced').download=job.name.replace(/\.stl$/i,'.gcode.3mf');
+  const key=job.preview_ready?job.sha256:'model';
+  if(key!==previewKey){previewKey=key;showGeometry(job,job.preview_ready?'sliced':'model');}
+}
+
+if(element('slice-form')) {
+  element('file').accept='.stl,.3mf';
+  element('upload').previousElementSibling.textContent='Upload STL til modelpreview og slicing, eller en færdig .gcode.3mf til køen. Upload starter aldrig print.';
+  document.querySelector('.model-layout > div > p').textContent='Drej med fingeren eller musen · zoom med to fingre eller scroll. Orienteringen mod byggepladen bevares; modellen arrangeres på pladen.';
+  document.querySelector('label[for="file"]').textContent='STL (maks. 50 MiB) eller .gcode.3mf (maks. 100 MiB)';
+  element('slice-form').onsubmit=async event=>{
+    event.preventDefault(); const job=modelJobs.find(item=>item.id===selectedModel);if(!job)return;
+    element('slice-button').disabled=true;
+    try {
+      await api(`/api/jobs/${job.id}/slice`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...JSON.parse(element('slice-slot').value),layer_height:Number(element('slice-layer').value),infill:Number(element('slice-infill').value)})});
+      await refresh();
+    } catch(error){element('slice-message').textContent=error.message;element('slice-button').disabled=false;}
+  };
+  element('show-original').onclick=()=>{const job=modelJobs.find(item=>item.id===selectedModel);if(job){previewKey=job.preview_ready?job.sha256:'model';showGeometry(job,'model');}};
+  const slicedButton=document.createElement('button');slicedButton.type='button';slicedButton.id='show-sliced';slicedButton.className='secondary';slicedButton.textContent='Vis printbaner';
+  slicedButton.onclick=()=>{const job=modelJobs.find(item=>item.id===selectedModel);if(job?.preview_ready)showGeometry(job,'sliced');};element('show-original').after(slicedButton);
+  const retry=document.createElement('button');retry.type='button';retry.id='retry-slice';retry.className='secondary';retry.textContent='Genstart slice-forsøg';retry.hidden=true;
+  retry.onclick=async()=>{if(window.confirm('Genstart slicing? Et ældre resultat ignoreres. Det starter ikke et print.'))await element('slice-form').onsubmit({preventDefault(){}});};element('slice-button').after(retry);
+}
 refresh(); setInterval(refresh, 5000);

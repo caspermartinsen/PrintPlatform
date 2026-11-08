@@ -1,0 +1,7 @@
+{
+  "name": "printplatform-preview",
+  "private": true,
+  "scripts": {"build": "esbuild preview-entry.js --bundle --format=esm --minify --outfile=built/preview.js"},
+  "dependencies": {"three": "0.180.0"},
+  "devDependencies": {"esbuild": "0.25.10"}
+}
