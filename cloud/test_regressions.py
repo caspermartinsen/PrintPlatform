@@ -264,3 +264,38 @@ class RegressionTests(unittest.TestCase):
             self.assertEqual(json.loads(path.read_text())['state'], 'awaiting')
         finally:
             agent.lock.close()
+
+    def test_upload_limit_reports_actual_size_without_reading_body(self):
+        handler = object.__new__(Handler)
+        handler.server = self.platform
+        handler.command = 'POST'
+        handler.path = '/api/jobs'
+        handler.connection = SimpleNamespace(settimeout=lambda _: None)
+        handler.headers = Message()
+        for key,value in {'Authorization':self.platform.browser_auth,'Origin':'https://test',
+                          'X-Filename':'large.3mf','Content-Length':str(101 * 1024**2)}.items():
+            handler.headers[key] = value
+        handler.rfile = Mock()
+        result = []
+        handler.respond = lambda status,payload: result.append((status,payload))
+        handler.dispatch()
+        self.assertEqual(result[0][0],413)
+        self.assertIn('101.0 MiB',result[0][1]['error'])
+        self.assertIn('100 MiB',result[0][1]['error'])
+        handler.rfile.read.assert_not_called()
+        self.assertEqual(list(self.platform.root.glob('*.3mf')),[])
+
+    def test_38_kib_multicolor_project_uses_upload_limit(self):
+        import zipfile
+        from slicer.fixtures import project_file
+        output = io.BytesIO(project_file())
+        with zipfile.ZipFile(output, 'a') as archive:
+            archive.comment = b'x' * (38 * 1024 - len(output.getvalue()))
+        data = output.getvalue()
+        self.assertEqual(len(data), 38 * 1024)
+        status, uploaded = self.call('/api/jobs', data, {'X-Filename':'colors.3mf'})
+        self.assertEqual(status, 201)
+        self.assertEqual(uploaded['state'], 'model')
+        with self.platform.db() as connection:
+            info = json.loads(connection.execute('SELECT model_info FROM jobs WHERE id=?', (uploaded['id'],)).fetchone()[0])
+        self.assertEqual(len(info['filaments']), 2)

@@ -94,6 +94,11 @@ class Platform(ThreadingHTTPServer):
                 connection.close()
 
 
+class BodyTooLarge(ValueError):
+    def __init__(self, size, maximum):
+        super().__init__(f'Filen eller forespørgslen er for stor ({size / 1024**2:.1f} MiB). Maksimum er {maximum / 1024**2:g} MiB.')
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args):
         pass
@@ -124,8 +129,10 @@ class Handler(BaseHTTPRequestHandler):
         if len(lengths) != 1 or self.headers.get('Transfer-Encoding'):
             raise ValueError('Content-Length required')
         size = int(lengths[0])
-        if not 0 < size <= maximum:
-            raise ValueError('Body too large')
+        if size <= 0:
+            raise ValueError('Filen eller forespørgslen er tom.')
+        if size > maximum:
+            raise BodyTooLarge(size, maximum)
         body = self.rfile.read(size)
         if len(body) != size:
             raise ValueError('Incomplete body')
@@ -150,6 +157,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             self.route(agent)
+        except BodyTooLarge as error:
+            self.respond(413, {'error': str(error)})
         except (ValueError, TypeError, KeyError) as error:
             self.respond(400, {'error': str(error) if isinstance(error,ValueError) else 'Invalid request'})
         except (OSError, sqlite3.Error):

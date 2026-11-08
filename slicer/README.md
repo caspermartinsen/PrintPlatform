@@ -116,3 +116,11 @@ Importerede proces-/maskinindstillinger erstattes af de faste profiler. Lagbaser
 Cloud kræver en opdateret worker, før 3MF-projekter kan klargøres. Gamle workers får ikke sådanne jobs. Opdatér derfor begge Dokploy-applikationer. Pi-agent og lokal service skal desuden have plan-version 3, før flerfarvejobs kan godkendes eller afleveres.
 
 CI bygger den fastlåste Bambu Studio-container og slicer et lille tofarvet 3MF-projekt med --network none. Testen kontrollerer både de to outputfilamenter og farveindeks i ekstruderingsbanerne. Den har ingen adgang til printeren.
+
+## Standard-3MF med objektmaterialer
+
+3MF-filer uden Bambu-projektmetadata kan importeres direkte, når farverne er
+angivet som standardens `basematerials` på de enkelte mesh-dele. Platformen
+opretter filamenttildelinger og bevarer geometri og samlinger. Vælg den ønskede
+PLA-spole for hver farve. Flere materialer inden for samme mesh kræver opdeling
+i farvede dele eller eksport som et Bambu Studio-projekt.

@@ -206,3 +206,54 @@ class MultiColorTests(unittest.TestCase):
                 self.assertIn(b'extruder="2"',data)
                 self.assertIn(b'gcode="tool_change"',data)
                 self.assertIn(b'extra=""',data)
+
+
+class StandardMaterialTests(unittest.TestCase):
+    def standard_file(self):
+        from cloud.model_files import safe_xml
+        import xml.etree.ElementTree as ET
+        ns={'m':'http://schemas.microsoft.com/3dmanufacturing/core/2015/02'}
+        output=io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(project_file())) as source, zipfile.ZipFile(output,'w') as target:
+            root=safe_xml(source.read('3D/3dmodel.model'))
+            resources=root.find('m:resources',ns)
+            palette=ET.SubElement(resources,'{'+ns['m']+'}basematerials',id='10')
+            for color in ('#151515FF','#2879E8FF'):
+                ET.SubElement(palette,'{'+ns['m']+'}base',name='Color',displaycolor=color)
+            for index,item in enumerate(resources.findall('m:object',ns)):
+                item.set('pid','10');item.set('pindex',str(index))
+            assembly=ET.SubElement(resources,'{'+ns['m']+'}object',id='3',type='model')
+            components=ET.SubElement(assembly,'{'+ns['m']+'}components')
+            for object_id in ('1','2'):
+                ET.SubElement(components,'{'+ns['m']+'}component',objectid=object_id)
+            build=root.find('m:build',ns);build.clear()
+            ET.SubElement(build,'{'+ns['m']+'}item',objectid='3')
+            for name in source.namelist():
+                if name.startswith('Metadata/'):continue
+                target.writestr(name,ET.tostring(root) if name=='3D/3dmodel.model' else source.read(name))
+        return output.getvalue()
+
+    def test_standard_materials_become_part_filaments_without_changing_model(self):
+        from cloud.model_files import safe_xml
+        data=self.standard_file()
+        info=project_info(data)
+        self.assertEqual([f['color'] for f in info['filaments']],['#151515','#2879E8'])
+        filaments=[{'color':f['color'],'profile_name':'PLA Basic'} for f in info['filaments']]
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'prepared.3mf'
+            prepare_project(data,path,filaments)
+            with zipfile.ZipFile(path) as prepared, zipfile.ZipFile(io.BytesIO(data)) as original:
+                self.assertEqual(prepared.read('3D/3dmodel.model'),original.read('3D/3dmodel.model'))
+                config=safe_xml(prepared.read('Metadata/model_settings.config'))
+                parts=config.findall("object[@id='3']/part")
+                self.assertEqual([(p.get('id'),p.find("metadata[@key='extruder']").get('value')) for p in parts],[('1','1'),('2','2')])
+
+    def test_unknown_material_rejected(self):
+        data=self.standard_file()
+        output=io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(data)) as source, zipfile.ZipFile(output,'w') as target:
+            for name in source.namelist():
+                content=source.read(name)
+                if name=='3D/3dmodel.model':content=content.replace(b'pid="10"',b'pid="999"')
+                target.writestr(name,content)
+        with self.assertRaises(ValueError):project_info(output.getvalue())

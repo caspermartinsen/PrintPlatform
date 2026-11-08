@@ -79,7 +79,92 @@ def safe_xml(data):
         raise ValueError('Ugyldige 3MF-modeldata.') from error
 
 
+def standard_project(data):
+    """Translate core 3MF object materials into Bambu part/extruder metadata."""
+    with project_archive(data) as archive:
+        names = set(archive.namelist())
+        if 'Metadata/project_settings.config' in names or 'Metadata/model_settings.config' in names:
+            return data
+        ns = {'m':'http://schemas.microsoft.com/3dmanufacturing/core/2015/02'}
+        if archive.getinfo('3D/3dmodel.model').file_size > 64 * 1024**2:
+            raise ValueError('En 3MF-modeldel er for stor.')
+        root = safe_xml(archive.read('3D/3dmodel.model'))
+        resources = root.find('m:resources',ns)
+        build = root.find('m:build',ns)
+        if resources is None or build is None:
+            raise ValueError('3MF mangler modelressourcer eller byggeplade.')
+        objects = {item.get('id'):item for item in resources.findall('m:object',ns)}
+        if len(objects) != len(resources.findall('m:object',ns)):
+            raise ValueError('Gentagne 3MF-objekt-id’er.')
+        palettes = {item.get('id'):list(item) for item in resources.findall('m:basematerials',ns)}
+        colors, assignments = [], {}
+        for object_id, item in objects.items():
+            mesh = item.find('m:mesh',ns)
+            if mesh is None:
+                continue
+            pid, index = item.get('pid'), item.get('pindex','0')
+            properties = set()
+            for triangle in mesh.findall('m:triangles/m:triangle',ns):
+                triangle_pid = triangle.get('pid',pid)
+                indices = [triangle.get('p1',index)]
+                indices += [triangle.get(key,indices[0]) for key in ('p2','p3')]
+                properties.update((triangle_pid,value) for value in indices)
+            if len(properties) > 1:
+                raise ValueError('Standard-3MF med flere materialer på samme mesh skal opdeles i farvede dele.')
+            if properties:
+                pid, index = next(iter(properties))
+            color = '#7282DD'
+            if pid is not None:
+                try:
+                    number = int(index)
+                    if number < 0: raise ValueError('Ugyldigt materialeindeks.')
+                    color = palettes[pid][number].get('displaycolor','')
+                except (KeyError,IndexError,TypeError) as error:
+                    raise ValueError('Standard-3MF refererer til et ukendt materiale.') from error
+                if not re.fullmatch(r'#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?',color):
+                    raise ValueError('Ugyldig standard-3MF-materialefarve.')
+            color = color[:7].upper()
+            if color not in colors: colors.append(color)
+            assignments[object_id] = colors.index(color)+1
+        if not assignments or len(colors)>16:
+            raise ValueError('Standard-3MF skal have 1–16 filamentfarver.')
+        config = ET.Element('config')
+        def leaves(object_id, trail=()):
+            if len(trail) > 32 or object_id in trail or object_id not in objects:
+                raise ValueError('Ugyldig eller cirkulær 3MF-samling.')
+            if object_id in assignments:
+                return [object_id]
+            result = []
+            for child in objects[object_id].findall('m:components/m:component',ns):
+                result.extend(leaves(child.get('objectid'),trail+(object_id,)))
+            return result
+        for object_id, item in objects.items():
+            entry = ET.SubElement(config,'object',id=object_id)
+            ET.SubElement(entry,'metadata',key='name',value=item.get('name','Model'))
+            for leaf in leaves(object_id):
+                part = ET.SubElement(entry,'part',id=leaf,subtype='normal_part')
+                ET.SubElement(part,'metadata',key='extruder',value=str(assignments[leaf]))
+            if object_id in assignments:
+                ET.SubElement(entry,'metadata',key='extruder',value=str(assignments[object_id]))
+        plate = ET.SubElement(config,'plate')
+        ET.SubElement(plate,'metadata',key='plater_id',value='1')
+        for index,item in enumerate(build.findall('m:item',ns)):
+            leaves(item.get('objectid'))
+            instance = ET.SubElement(plate,'model_instance')
+            for key,value in (('object_id',item.get('objectid')),('instance_id',str(index)),('identify_id',str(index+1))):
+                ET.SubElement(instance,'metadata',key=key,value=value)
+        settings = {'filament_colour':colors,'filament_type':['PLA']*len(colors),
+                    'filament_settings_id':['']*len(colors)}
+        output = io.BytesIO()
+        with zipfile.ZipFile(output,'w',compression=zipfile.ZIP_DEFLATED) as target:
+            for entry in archive.infolist():target.writestr(entry,archive.read(entry))
+            target.writestr('Metadata/project_settings.config',json.dumps(settings))
+            target.writestr('Metadata/model_settings.config',ET.tostring(config,encoding='utf-8',xml_declaration=True))
+        return output.getvalue()
+
+
 def project_info(data):
+    data = standard_project(data)
     with project_archive(data) as archive:
         names = set(archive.namelist())
         if any(re.fullmatch(r'Metadata/plate_\d+\.gcode', name) for name in names):
@@ -193,6 +278,7 @@ def safe_layer_changes(data, filaments):
 
 def prepare_project(data, path, filaments):
     """Preserve meshes, assembly and paint; replace imported executable settings."""
+    data = standard_project(data)
     info = project_info(data)
     if len(filaments) != info['filament_count']:
         raise ValueError('Alle projektets filamenter skal have en profil.')
