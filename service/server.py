@@ -17,7 +17,7 @@ from urllib.parse import unquote_to_bytes
 import zipfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telemetry import Telemetry
-from print_plan import analyze, select, mapping, live_ready
+from print_plan import analyze, select, mapping, live_ready, selection_items, PLAN_VERSION
 
 
 ACTIVE = ('starting', 'submitted', 'unknown')
@@ -34,7 +34,7 @@ def upload_name(headers, allow_stl=False):
     else:
         name = headers.get('X-Filename', '')
     name = unicodedata.normalize('NFC', name)
-    suffix = '.stl' if allow_stl and name.lower().endswith('.stl') else '.gcode.3mf'
+    suffix = next((suffix for suffix in (('.gcode.3mf','.3mf','.stl') if allow_stl else ('.gcode.3mf',)) if name.lower().endswith(suffix)), '.gcode.3mf')
     if (not name.lower().endswith(suffix) or not 1 <= len(name) <= 180
             or not name[:-len(suffix)].strip(' .')
             or any(character in '/\\:' or unicodedata.category(character).startswith('C') for character in name)):
@@ -301,7 +301,7 @@ class Handler(BaseHTTPRequestHandler):
     def route(self):
         store = self.server.store
         if self.command == 'GET' and self.path == '/v1/status':
-            self.reply(200, {'mode': os.environ.get('PRINT_MODE', 'simulate'),
+            self.reply(200, {'mode': os.environ.get('PRINT_MODE', 'simulate'), 'plan_version':PLAN_VERSION,
                              'remote_live_enabled': os.environ.get('ALLOW_REMOTE_LIVE','0') == '1' and os.environ.get('PRINT_MODE') == 'live',
                              'printer': self.server.telemetry.snapshot() if hasattr(self.server, 'telemetry') else {'state': 'unknown'},
                              'jobs': store.jobs(), 'automatic_start': False})
@@ -343,7 +343,7 @@ class Handler(BaseHTTPRequestHandler):
                 temporary.unlink(missing_ok=True)
             self.reply(201, {'id': job_id, 'state': 'queued', 'sha256': digest.hexdigest()})
         elif self.command == 'POST' and re.fullmatch(r'/v1/jobs/[0-9a-f-]{36}/(start|simulate|remote-start|resolve)', self.path):
-            payload = json.loads(self.rfile.read(self.body(4096)))
+            payload = json.loads(self.rfile.read(self.body(16384)))
             job_id, action = self.path.split('/')[3:]
             if action in ('start', 'simulate', 'remote-start'):
                 execution_mode = None
@@ -363,7 +363,7 @@ class Handler(BaseHTTPRequestHandler):
                     current = self.server.telemetry.snapshot()
                     selection = select(analyze(store.root / (job_id + '.gcode.3mf')), current,
                                        {**choice, 'bed_clear': payload.get('printer_ready'), 'accept_differences': True})
-                    if any(selection.get(key) != choice.get(key) for key in ('material', 'name', 'color', 'filament_id')):
+                    if [{key:item.get(key) for key in ('material','name','color','filament_id','ams_id','slot')} for item in selection_items(selection)] != [{key:item.get(key) for key in ('material','name','color','filament_id','ams_id','slot')} for item in selection_items(choice)]:
                         raise ValueError('AMS contents changed after approval')
                     if execution_mode == 'live':
                         live_ready(analyze(store.root / (job_id + '.gcode.3mf')), current, selection)

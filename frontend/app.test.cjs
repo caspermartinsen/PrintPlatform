@@ -66,7 +66,7 @@ function setup(fetch) {
 async function choose(view) {
   await view.context.approve(view.job);
   view.nodes.get('ams-choice').value=JSON.stringify({ams_id:0,slot:1});
-  view.all.find(node=>node.type==='checkbox' && !node.id).checked=true;
+  for(const node of view.all)if(node.type==='checkbox'&&node.required)node.checked=true;
 }
 
 test('server rejection stays visible in dialog and preserves selection',async()=>{
@@ -224,4 +224,67 @@ test('overlapping status polls coalesce and forced refresh waits for a new respo
   completions.shift()();await first;await Promise.resolve();
   assert.equal(calls,2);
   completions.shift()();await forced;
+});
+
+
+function multicolor(view,version=3) {
+  view.job.analysis.filaments=[
+    {id:1,material:'PLA',profile:'PLA Basic',color:'#FF0000'},
+    {id:2,material:'PLA',profile:'PLA Basic',color:'#0000FF'}];
+  vm.runInContext('latestStatus={pi:{plan_version:'+version+'}};latestPrinter={ams_slots:[{ams_id:0,slot:1,present:true,stale:false,material:"PLA",name:"PLA Basic",color:"FF0000FF"},{ams_id:0,slot:2,present:true,stale:false,material:"PLA",name:"PLA Basic",color:"0000FFFF"}]};',view.context);
+}
+
+test('multicolor approval sends every logical filament to its chosen AMS slot',async()=>{
+  let sent;
+  const view=setup(async(path,options)=>{sent=JSON.parse(options.body);return {ok:true,json:async()=>({saved:true})};});
+  multicolor(view);
+  await view.context.approve(view.job);
+  assert.equal(view.nodes.get('ams-choice-1').value,'{"ams_id":0,"slot":1}');
+  assert.equal(view.nodes.get('ams-choice-2').value,'{"ams_id":0,"slot":2}');
+  for(const node of view.all)if(node.type==='checkbox'&&node.required)node.checked=true;
+  await view.form.onsubmit(view.event(view.submit));
+  assert.deepEqual(sent.filaments,[{filament_id:1,ams_id:0,slot:1},{filament_id:2,ams_id:0,slot:2}]);
+  assert.equal(sent.execution_mode,'simulate');
+});
+
+test('multicolor cannot be submitted to an older Pi service',async()=>{
+  let requests=0;
+  const view=setup(async()=>{requests++;});
+  multicolor(view,2);await view.context.approve(view.job);
+  assert.equal(view.submit.disabled,true);
+  await view.form.onsubmit(view.event(view.submit));
+  assert.equal(requests,0);
+});
+
+test('missing second color keeps the approval form incomplete',async()=>{
+  let requests=0;
+  const view=setup(async()=>{requests++;});
+  multicolor(view);await view.context.approve(view.job);
+  view.nodes.get('ams-choice-2').value='';
+  view.form.reportValidity=()=>Boolean(view.nodes.get('ams-choice-1').value&&view.nodes.get('ams-choice-2').value);
+  await view.form.onsubmit(view.event(view.submit));
+  assert.equal(requests,0);
+  assert.equal(view.dialog.open,true);
+});
+
+test('a profile conflict on the second color blocks physical print',async()=>{
+  const view=setup(async()=>{throw new Error('No print');});
+  multicolor(view);view.job.analysis.filaments[1].profile='PLA Matte';
+  await view.context.approve(view.job);
+  view.nodes.get('ams-choice-2').value='{"ams_id":0,"slot":2}';
+  const mode=view.nodes.get('execution-mode');mode.value='live';mode.onchange();
+  assert.equal(view.submit.disabled,true);
+  assert.equal(view.nodes.get('accept-differences').required,true);
+});
+
+test('multicolor slicing choices are retained even when colors differ',async()=>{
+  const view=setup(async()=>{throw new Error('No print');});
+  multicolor(view);
+  view.job.analysis.filaments[0].color='#00FF00';
+  view.job.slice_options={filaments:[{filament_id:1,ams_id:0,slot:1},{filament_id:2,ams_id:0,slot:2}]};
+  await view.context.approve(view.job);
+  assert.equal(view.nodes.get('ams-choice-1').value,'{"ams_id":0,"slot":1}');
+  assert.equal(view.nodes.get('ams-choice-2').value,'{"ams_id":0,"slot":2}');
+  assert.equal(view.nodes.get('accept-differences').required,true);
+  assert.notEqual(view.nodes.get('accept-differences').checked,true);
 });

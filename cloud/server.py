@@ -11,13 +11,14 @@ import sys
 import time
 import threading
 import uuid
+import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'service'))
 sys.path.insert(1, str(Path(__file__).resolve().parents[1]))
 from server import validate as validate_archive, safe_diagnostics, upload_name
-from print_plan import analyze, select, live_ready
-from cloud.model_files import stl_info
+from print_plan import analyze, select, live_ready, required_version
+from cloud.model_files import stl_info, project_info, sliced_preview, is_sliced_3mf
 from cloud import slicing
 
 
@@ -41,9 +42,13 @@ class Platform(ThreadingHTTPServer):
                     connection.execute('ALTER TABLE jobs ADD COLUMN ' + column + ' TEXT')
             if 'preview_ready' not in columns:
                 connection.execute('ALTER TABLE jobs ADD COLUMN preview_ready INTEGER DEFAULT 0')
+            if 'required_plan_version' not in columns:
+                connection.execute('ALTER TABLE jobs ADD COLUMN required_plan_version INTEGER DEFAULT 1')
             if 'slice_expires' not in columns:
                 connection.execute('ALTER TABLE jobs ADD COLUMN slice_expires REAL')
             connection.execute('CREATE TABLE IF NOT EXISTS slicer_health (id INTEGER PRIMARY KEY, seen REAL)')
+            if 'version' not in {row[1] for row in connection.execute('PRAGMA table_info(slicer_health)')}:
+                connection.execute('ALTER TABLE slicer_health ADD COLUMN version INTEGER DEFAULT 1')
         super().__init__(address, Handler, bind_and_activate=bind_and_activate)
 
     def job_guard(self, job_id):
@@ -171,7 +176,7 @@ class Handler(BaseHTTPRequestHandler):
             with platform.db() as connection:
                 jobs = [dict(row) for row in connection.execute('SELECT * FROM jobs ORDER BY created DESC LIMIT 1000')]
                 telemetry = connection.execute('SELECT * FROM telemetry WHERE id=1').fetchone()
-                slicer_health = connection.execute('SELECT seen FROM slicer_health WHERE id=1').fetchone()
+                slicer_health = connection.execute('SELECT seen,version FROM slicer_health WHERE id=1').fetchone()
             seen = telemetry['seen'] if telemetry else None
             for job in jobs:
                 job['analysis'] = json.loads(job['analysis']) if job['analysis'] else analyze(platform.root / (job['id'] + '.gcode.3mf')) if job['sha256'] else {'supported':False,'reason':'Afventer slicing.','filaments':[]}
@@ -180,6 +185,7 @@ class Handler(BaseHTTPRequestHandler):
                     job[field] = json.loads(job[field]) if job[field] else None
                 job.pop('slice_token',None)
             self.respond(200, {'jobs': jobs, 'agent_online': seen is not None and time.time() - seen < 45,
+                               'slicer_version':slicer_health['version'] if slicer_health else 0,
                                'slicer_online':slicer_health is not None and time.time()-slicer_health['seen'] < 45,
                                'live_enabled': os.environ.get('ALLOW_LIVE_PRINT','0') == '1' and telemetry is not None and time.time()-seen < 45 and json.loads(telemetry['body']).get('remote_live_enabled') is True,
                                'last_seen': seen, 'pi': json.loads(telemetry['body']) if telemetry else None})
@@ -191,10 +197,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond(507, {'error': 'Storage quota reached'})
                 return
             job_id = str(uuid.uuid4())
-            is_model = name.lower().endswith('.stl')
-            path = platform.root / (job_id + ('.stl' if is_model else '.gcode.3mf'))
+            is_stl = name.lower().endswith('.stl')
+            is_project = name.lower().endswith('.3mf') and not name.lower().endswith('.gcode.3mf')
+            is_model = is_stl or is_project
+            path = platform.root / (job_id + ('.stl' if is_stl else '.3mf' if is_project else '.gcode.3mf'))
             try:
-                data = self.body((50 if is_model else 100) * 1024**2)
+                data = self.body((50 if is_stl else 100) * 1024**2)
+                if is_project and is_sliced_3mf(data):
+                    is_project = is_model = False
+                    path = platform.root / (job_id + '.gcode.3mf')
                 if sum(item.stat().st_size for item in platform.root.iterdir()) + len(data) > 2 * 1024**3:
                     self.respond(507, {'error': 'Lagerkvoten er nået. Der er ikke plads til filen.'})
                     return
@@ -202,7 +213,7 @@ class Handler(BaseHTTPRequestHandler):
                     target.write(data)
                     target.flush()
                     os.fsync(target.fileno())
-                model_info = stl_info(data) if is_model else None
+                model_info = project_info(data) if is_project else {**stl_info(data),'kind':'stl'} if is_stl else None
                 if not is_model:
                     validate_archive(path)
                 digest = hashlib.sha256(data).hexdigest()
@@ -213,6 +224,15 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 path.unlink(missing_ok=True)
                 raise
+            if not is_model:
+                try:
+                    preview = sliced_preview(path)
+                    if preview['segment_count']:
+                        (platform.root / (job_id + '.preview.json')).write_text(json.dumps(preview))
+                        with platform.db() as connection:
+                            connection.execute('UPDATE jobs SET preview_ready=1 WHERE id=?',(job_id,))
+                except (ValueError,KeyError,TypeError,ET.ParseError):
+                    pass
             self.respond(201, {'id': job_id,'state':'model' if is_model else 'queued'})
         elif self.command == 'POST' and re.fullmatch(r'/api/jobs/[a-f0-9-]{36}/(approve|resolve)', self.path):
             job_id = self.path.split('/')[3]
@@ -230,22 +250,25 @@ class Handler(BaseHTTPRequestHandler):
                         self.respond(409, {'error': 'Pi er offline.'})
                         return
                     analysis = analyze(platform.root / (job_id + '.gcode.3mf'))
-                    if job['model_info'] and payload.get('preview_checked') is not True:
+                    if (job['model_info'] or job['preview_ready']) and payload.get('preview_checked') is not True:
                         raise ValueError('Bekræft at du har kontrolleret det slicede preview.')
+                    minimum_version = required_version(analysis)
                     execution_mode = payload.get('execution_mode','simulate')
                     report = json.loads(telemetry['body'])
                     try:
                         if execution_mode not in ('simulate','live'):
                             raise ValueError('Ukendt printtilstand.')
+                        if minimum_version > report.get('plan_version',1):
+                            raise ValueError('Opdatér Pi-agent og printservice for at bruge flere farver eller andre filamentindeks.')
                         selection = select(analysis, json.loads(telemetry['body']).get('printer', {}), payload)
                         if execution_mode == 'live':
-                            if os.environ.get('ALLOW_LIVE_PRINT','0') != '1' or report.get('remote_live_enabled') is not True or report.get('plan_version') != 2 or payload.get('confirm_physical') != 'START PRINT':
+                            if os.environ.get('ALLOW_LIVE_PRINT','0') != '1' or report.get('remote_live_enabled') is not True or report.get('plan_version',0) < 2 or payload.get('confirm_physical') != 'START PRINT':
                                 raise ValueError('Fysisk printstart er ikke aktiveret eller bekræftet.')
                             live_ready(analysis, report.get('printer',{}), selection)
                     except ValueError as error:
                         self.respond(409, {'error': str(error)})
                         return
-                    changed = connection.execute("UPDATE jobs SET state='approved',selection=?,analysis=?,execution_mode=? WHERE id=? AND state='queued'", (json.dumps(selection), json.dumps(analysis), execution_mode, job_id)).rowcount
+                    changed = connection.execute("UPDATE jobs SET state='approved',selection=?,analysis=?,execution_mode=?,required_plan_version=? WHERE id=? AND state='queued'", (json.dumps(selection), json.dumps(analysis), execution_mode, minimum_version, job_id)).rowcount
                 else:
                     target = connection.execute('SELECT state FROM jobs WHERE id=?',(job_id,)).fetchone()
                     if target and target['state'] == 'dispatched':
@@ -262,7 +285,7 @@ class Handler(BaseHTTPRequestHandler):
             with platform.db() as connection:
                 connection.execute('INSERT OR REPLACE INTO telemetry VALUES (1,?,?)', (json.dumps(report), time.time()))
                 active = connection.execute("SELECT 1 FROM jobs WHERE state IN ('dispatched','submitted','unknown')").fetchone()
-                job = None if active or report.get('local_busy') or report.get('plan_version') not in (1,2) else connection.execute("SELECT * FROM jobs WHERE state='approved' AND (COALESCE(execution_mode,'simulate')='simulate' OR ?=1) ORDER BY created LIMIT 1", (int(os.environ.get('ALLOW_LIVE_PRINT','0') == '1' and report.get('remote_live_enabled') is True and report.get('plan_version') == 2),)).fetchone()
+                job = None if active or report.get('local_busy') or report.get('plan_version') not in (1,2,3) else connection.execute("SELECT * FROM jobs WHERE state='approved' AND COALESCE(required_plan_version,1)<=? AND (COALESCE(execution_mode,'simulate')='simulate' OR ?=1) ORDER BY created LIMIT 1", (report.get('plan_version',0), int(os.environ.get('ALLOW_LIVE_PRINT','0') == '1' and report.get('remote_live_enabled') is True and report.get('plan_version',0) >= 2),)).fetchone()
                 if job:
                     connection.execute("UPDATE jobs SET state='dispatched' WHERE id=?", (job['id'],))
                 resolutions = [json.loads(row['receipt']).get('local_job_id') for row in connection.execute("SELECT receipt FROM jobs WHERE state='resolved' AND receipt IS NOT NULL")]

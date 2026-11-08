@@ -21,14 +21,18 @@ def route(handler):
     path = handler.path
     match = re.fullmatch(r'/(api|slicer)/jobs/([a-f0-9-]{36})/(model|slice|preview|sliced-file|result|failed)', path)
     if handler.command == 'POST' and path in ('/slicer/poll','/slicer/heartbeat'):
-        json.loads(handler.body())
+        payload = json.loads(handler.body())
+        version = payload.get('slicer_version',1)
+        if type(version) is not int or version not in (1,2):
+            raise ValueError('Ukendt slicerversion.')
         expire(platform)
         with platform.db() as connection:
-            connection.execute('INSERT OR REPLACE INTO slicer_health VALUES (1,?)', (time.time(),))
+            connection.execute('INSERT OR REPLACE INTO slicer_health(id,seen,version) VALUES (1,?,?)', (time.time(),version))
             if path == '/slicer/heartbeat':
                 handler.respond(200,{'ok':True})
                 return True
-            job = connection.execute("SELECT * FROM jobs WHERE state='slice_queued' ORDER BY created LIMIT 1").fetchone()
+            candidates = connection.execute("SELECT * FROM jobs WHERE state='slice_queued' ORDER BY created").fetchall()
+            job = next((item for item in candidates if version >= 2 or json.loads(item['model_info']).get('kind') != '3mf'),None)
             if job:
                 connection.execute("UPDATE jobs SET state='slicing',slice_expires=? WHERE id=?", (time.time() + SLICE_LEASE_SECONDS, job['id']))
         handler.respond(200, {'job': dict(job) if job else None})
@@ -53,7 +57,7 @@ def route(handler):
             return True
         job = dict(row)
     if handler.command == 'GET' and action == 'model' and job.get('model_info'):
-        handler.respond(200, (platform.root / (job_id + '.stl')).read_bytes(), 'application/octet-stream')
+        handler.respond(200, (platform.root / (job_id + ('.3mf' if json.loads(job['model_info']).get('kind') == '3mf' else '.stl'))).read_bytes(), 'application/octet-stream')
     elif handler.command == 'GET' and audience == 'api' and action == 'sliced-file' and job['sha256'] and job['state'] not in ('model','slice_queued','slicing','slice_failed'):
         handler.respond(200, (platform.root / (job_id + '.gcode.3mf')).read_bytes(), 'application/octet-stream')
     elif handler.command == 'GET' and audience == 'api' and action == 'preview' and job.get('preview_ready'):
@@ -71,18 +75,40 @@ def route(handler):
             status = connection.execute('SELECT * FROM telemetry WHERE id=1').fetchone()
         report = json.loads(status['body']) if status else {}
         printer = report.get('printer', {})
-        slot = next((item for item in printer.get('ams_slots', []) if item.get('ams_id') == payload.get('ams_id') and item.get('slot') == payload.get('slot')), None)
-        if not status or time.time() - status['seen'] > 45 or not printer.get('connected') or printer.get('stale') or not slot or slot.get('stale') or slot.get('present') is not True:
-            handler.respond(409, {'error': 'Vælg en frisk, fyldt AMS-plads fra en online Pi.'})
-            return True
-        if slot.get('name') not in PROFILES or slot.get('material') != 'PLA':
-            handler.respond(409, {'error': 'Slicing understøtter PLA Basic, PLA Matte og PLA Translucent på P2S.'})
-            return True
-        color = slot.get('color')
-        if not isinstance(color,str) or not re.fullmatch('[0-9A-Fa-f]{8}',color):
-            raise ValueError('Farven er ukendt.')
-        options = {'profile': PROFILES[slot['name']], 'profile_name': slot['name'], 'color':'#' + color[:6],
-                   'layer_height': layer, 'infill': infill, 'ams_id':slot['ams_id'], 'slot':slot['slot']}
+        info = json.loads(job['model_info'])
+        if info.get('kind') == '3mf':
+            with platform.db() as connection:
+                health = connection.execute('SELECT seen,version FROM slicer_health WHERE id=1').fetchone()
+            if not health or time.time()-health['seen'] > 45 or health['version'] < 2:
+                raise ValueError('Opdatér og tilslut slicer-containeren for at klargøre 3MF-projekter.')
+        required = info.get('filaments',[{'id':1,'material':'PLA'}])
+        choices = payload.get('filaments')
+        if choices is None and len(required) == 1:
+            choices = [{**payload,'filament_id':required[0]['id']}]
+        if (not isinstance(choices,list) or len(choices) != len(required)
+                or not all(isinstance(item,dict) and type(item.get('filament_id')) is int for item in choices)
+                or {item['filament_id'] for item in choices} != {item['id'] for item in required}):
+            raise ValueError('Vælg en AMS-plads for hver projektfarve.')
+        if not status or time.time() - status['seen'] > 45 or not printer.get('connected') or printer.get('stale'):
+            raise ValueError('Afventer frisk printerstatus.')
+        prepared = []
+        for filament in required:
+            choice = next(item for item in choices if item['filament_id'] == filament['id'])
+            if type(choice.get('ams_id')) is not int or type(choice.get('slot')) is not int:
+                raise ValueError('Ugyldigt AMS-valg.')
+            slot = next((item for item in printer.get('ams_slots',[]) if item.get('ams_id') == choice['ams_id'] and item.get('slot') == choice['slot']),None)
+            if not slot or slot.get('stale') or slot.get('present') is not True:
+                raise ValueError('Vælg friske, fyldte AMS-pladser.')
+            if slot.get('name') not in PROFILES or slot.get('material') != 'PLA' or filament['material'] != 'PLA':
+                raise ValueError('Klargøring understøtter PLA Basic, PLA Matte og PLA Translucent på P2S.')
+            color = slot.get('color')
+            if not isinstance(color,str) or not re.fullmatch('[0-9A-Fa-f]{8}',color):
+                raise ValueError('Filamentfarven er ukendt.')
+            prepared.append({'filament_id':filament['id'],'profile':PROFILES[slot['name']],'profile_name':slot['name'],
+                             'color':'#' + color[:6],'ams_id':slot['ams_id'],'slot':slot['slot']})
+        options = {'layer_height':layer,'infill':infill,'source_kind':info.get('kind','stl'),'filaments':prepared}
+        if len(prepared) == 1:
+            options.update(prepared[0])
         with platform.db() as connection:
             connection.execute("UPDATE jobs SET state='slice_queued',slice_options=?,slice_token=?,analysis=NULL,selection=NULL,sha256=NULL,preview_ready=0,slice_error=NULL,slice_expires=NULL WHERE id=?", (json.dumps(options), str(uuid.uuid4()), job_id))
         handler.respond(202, {'id':job_id,'state':'slice_queued'})
@@ -110,8 +136,13 @@ def route(handler):
             validate(temporary)
             analysis = analyze(temporary)
             options = json.loads(job['slice_options'])
-            if not analysis['supported'] or analysis.get('printer_model') != 'Bambu Lab P2S' or options['profile_name'] not in analysis['filaments'][0]['profile'] or analysis['filaments'][0]['color'].upper()!=options['color'].upper():
-                raise ValueError('Slicerresultatet matcher ikke den valgte profil.')
+            expected = {item['filament_id']:item for item in options.get('filaments',[{**options,'filament_id':1}])}
+            if not analysis['supported'] or analysis.get('printer_model') != 'Bambu Lab P2S':
+                raise ValueError('Slicerresultatet mangler filamentoplysninger.')
+            for filament in analysis['filaments']:
+                configured = expected.get(filament['id'])
+                if not configured or configured['profile_name'] not in filament['profile'] or filament['color'].upper() != configured['color'].upper():
+                    raise ValueError('Slicerresultatet matcher ikke projektets farvevalg.')
             preview = sliced_preview(temporary)
             if not preview['segment_count'] or preview['printer_model_id']!='N7' or preview['nozzle_diameters']!='0.4' or preview['bed_type']!='Textured PEI Plate' or preview['layer_height']!=options['layer_height'] or preview['infill']!=str(options['infill'])+'%':
                 raise ValueError('Slicerresultatet mangler visbare printbaner.')

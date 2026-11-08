@@ -25,7 +25,7 @@ jobs:
       - name: Pi service and telemetry
         run: python -m unittest discover -s service -v
       - name: Cloud, slicing, regressions and updater
-        run: python -m unittest cloud.test_platform cloud.test_slicing cloud.test_regressions deploy.test_updater -v
+        run: python -m unittest cloud.test_platform cloud.test_slicing cloud.test_regressions cloud.test_multicolor deploy.test_updater -v
 
   frontend:
     runs-on: ubuntu-24.04
@@ -43,3 +43,14 @@ jobs:
         working-directory: frontend
       - name: Build web container
         run: docker build -t printplatform:ci .
+
+
+  slicer:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the pinned Bambu Studio slicer
+        run: docker build --platform linux/amd64 -f slicer/Dockerfile -t printplatform-slicer:ci .
+      - name: Slice a two-color 3MF with no network or printer access
+        run: docker run --rm --network none --memory 4g --cpus 2 --pids-limit 128 -e RUN_SLICER_SMOKE=1 --entrypoint python3 printplatform-slicer:ci -m unittest slicer.test_integration -v

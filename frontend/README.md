@@ -145,13 +145,11 @@ Pi-API'et forbliver på loopback. Bevar `PRINT_MODE=simulate` under udvikling og
 
 ## Funktionelt forløb
 
-### Étfarveplan og AMS-valg
+### Filamentplan og AMS-valg
 
 Upload analyserer `Metadata/slice_info.config` for faktisk anvendte filamenter,
 ikke antallet af gemte profiler i projektet. Navn på profil hentes fra
-`project_settings.config`. En fil med flere anvendte filamenter, ukendt materiale
-eller manglende metadata kan gemmes, men kan ikke godkendes. Første version kræver,
-at det ene anvendte filament er filament 1; andre indeks skal om-slices.
+`project_settings.config`. Flere anvendte filamenter og huller i filamentindeks understøttes nu. Der vælges én AMS-plads pr. anvendt filament; ukendte materialer eller manglende metadata kan fortsat ikke godkendes.
 Metadata er oplysninger fra sliceren, ikke en analyse af alle G-code-bevægelser.
 
 Godkendelsesdialogen viser filnavn, filamentkrav og AMS-valg. Materialet skal være
@@ -248,3 +246,17 @@ frontend-build og webcontainer-build. De starter ingen fysiske print.
 
 Agenten fortsætter med at sende printerstatus, mens den afventer driverens resultat.
 Et afventende journalført job holder køen optaget og sender ingen ny startkommando.
+
+## Filtyper og farver
+
+| Fil | Forløb |
+| --- | --- |
+| STL | Geometri uden farver; vælg ét filament og klargør |
+| Bambu Studio 3MF-projekt | Én plade med dele/malede farver; vælg en spole pr. projektfilament og klargør |
+| Færdigslicet .gcode.3mf | Bevar eksisterende farveskift, kontrollér printbaner og vælg AMS-pladser |
+
+En færdigslicet fil med endelsen .3mf genkendes også ud fra indholdet. Modeller og rå 3MF-filer uploades med hhv. højst 50 og 100 MiB. 3MF skal være i millimeter og uden eksterne referencer. Flere plader afvises.
+
+Farvevalgene vises enkeltvis i godkendelsesdialogen. Farveforskelle kræver accept; profilkonflikter på bare ét filament blokerer fysisk start. Spoleskift kontrolleres for alle valgte filamenter på Pi’en. Nye job lagrer required_plan_version, så en opdateret agent sammen med en gammel lokal service ikke kan modtage flerfarvejob.
+
+De slicede printbaner farves efter G-code-værktøjsskift. Den oprindelige 3MF-modelvisning kan ikke vise alle Bambu-malingsudvidelser; kontrollér den færdigslicede farvefordeling. Filen konverteres ikke til STL under slicing. Browserbaseret maling af STL er ikke en del af denne ændring.

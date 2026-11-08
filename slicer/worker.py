@@ -16,7 +16,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from cloud.model_files import stl_info
+from cloud.model_files import stl_info, project_info, prepare_project
 from slicer.profiles import FILAMENTS
 
 
@@ -53,23 +53,41 @@ def limits():
 
 
 def run_slice(data, options, destination, profiles, binary):
-    if options.get('profile') not in FILAMENTS or options.get('layer_height') not in (0.12,0.2,0.28) or options.get('infill') not in (10,15,20,40,100) or not re.fullmatch(r'#[0-9A-Fa-f]{6}',str(options.get('color',''))):
+    selected = options.get('filaments',[{**options,'filament_id':1}])
+    if (not isinstance(selected,list) or not 1 <= len(selected) <= 16
+            or options.get('layer_height') not in (0.12,0.2,0.28)
+            or type(options.get('infill')) is not int or options['infill'] not in (10,15,20,40,100)):
         raise ValueError('Invalid trusted slicing options')
+    for index,item in enumerate(selected):
+        if (item.get('filament_id') != index+1 or item.get('profile') not in FILAMENTS
+                or not re.fullmatch(r'#[0-9A-Fa-f]{6}',str(item.get('color','')))):
+            raise ValueError('Invalid trusted filament options')
     destination.mkdir(parents=True,exist_ok=True)
-    model = destination / 'model.stl'
-    normalize_model(data, model)
+    project = options.get('source_kind','stl') == '3mf'
+    model = destination / ('model.3mf' if project else 'model.stl')
+    if project:
+        prepare_project(data,model,selected)
+    else:
+        if len(selected) != 1:
+            raise ValueError('STL contains no color assignments')
+        normalize_model(data,model)
     process = json.loads((profiles / 'process.json').read_text())
-    process.update(layer_height=str(options['layer_height']),sparse_infill_density=str(options['infill'])+'%',enable_arc_fitting='0',enable_support='0')
+    process.update(layer_height=str(options['layer_height']),sparse_infill_density=str(options['infill'])+'%',
+                   enable_arc_fitting='0',enable_support='0',enable_prime_tower='1' if len(selected)>1 else '0',
+                   post_process=[])
     process_path = destination / 'process.json'
     process_path.write_text(json.dumps(process))
-    filament = json.loads((profiles / (options['profile'] + '.json')).read_text())
-    filament['filament_colour'] = [options['color']]
-    filament_path = destination / 'filament.json'
-    filament_path.write_text(json.dumps(filament))
+    filament_paths = []
+    for item in selected:
+        filament = json.loads((profiles / (item['profile'] + '.json')).read_text())
+        filament['filament_colour'] = [item['color']]
+        filament_path = destination / ('filament-' + str(item['filament_id']) + '.json')
+        filament_path.write_text(json.dumps(filament))
+        filament_paths.append(str(filament_path))
     command = [str(binary),'--datadir',str(destination / 'config'),'--load-settings',
-        str(profiles / 'machine.json')+';'+str(process_path),'--load-filaments',str(filament_path),
-        '--curr-bed-type','Textured PEI Plate','--arrange','1','--ensure-on-bed','--slice','1','--export-3mf','result.gcode.3mf',
-        '--outputdir',str(destination),str(model)]
+        str(profiles / 'machine.json')+';'+str(process_path),'--load-filaments',';'.join(filament_paths),
+        '--curr-bed-type','Textured PEI Plate','--arrange','0' if project else '1','--ensure-on-bed',
+        '--slice','1','--export-3mf','result.gcode.3mf','--outputdir',str(destination),str(model)]
     environment = {'PATH':os.environ.get('PATH','/usr/bin:/bin'), 'HOME':str(destination),
                    'LANG':'C.UTF-8','DISPLAY':os.environ.get('DISPLAY',':99'), 'LIBGL_ALWAYS_SOFTWARE':'1'}
     with (destination / 'cli.log').open('wb') as log:
@@ -113,7 +131,7 @@ class Worker:
         return data if raw else json.loads(data)
 
     def tick(self):
-        job=self.request('/slicer/poll',{})['job']
+        job=self.request('/slicer/poll',{'slicer_version':2})['job']
         if not job:
             return
         headers={'X-Slice-Token':job['slice_token']}
@@ -140,7 +158,7 @@ if __name__=='__main__':
     def heartbeat():
         while True:
             try:
-                worker.request('/slicer/heartbeat',{})
+                worker.request('/slicer/heartbeat',{'slicer_version':2})
                 Path('/tmp/slicer-heartbeat').touch()
             except Exception:
                 pass

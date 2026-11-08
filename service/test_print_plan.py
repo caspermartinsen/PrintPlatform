@@ -52,9 +52,9 @@ class PrintPlanTests(unittest.TestCase):
         analysis = self.file('<filament id="1" type="PLA" used_g="10" color="#FFFFFF"/><filament id="2" type="PETG" used_g="0"/>')
         self.assertTrue(analysis['supported'])
         self.assertEqual(len(analysis['filaments']), 1)
-        self.assertFalse(self.file('<filament id="1" type="PLA" used_g="1"/><filament id="2" type="PETG" used_g="2"/>')['supported'])
+        self.assertTrue(self.file('<filament id="1" type="PLA" used_g="1"/><filament id="2" type="PETG" used_g="2"/>')['supported'])
         self.assertFalse(self.file('')['supported'])
-        self.assertFalse(self.file('<filament id="3" type="PLA" used_g="2"/>')['supported'])
+        self.assertTrue(self.file('<filament id="3" type="PLA" used_g="2"/>')['supported'])
 
     def test_warning_acceptance_and_mapping(self):
         selection = select(self.analysis, self.printer, self.payload)
