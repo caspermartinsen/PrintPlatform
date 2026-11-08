@@ -4,6 +4,20 @@ const {join} = require('node:path');
 const vm = require('node:vm');
 const {test} = require('node:test');
 
+test('approved jobs explain the blocking inspection and offline waiting',()=>{
+  const source=readFileSync(join(__dirname,'app.js'),'utf8');
+  const start=source.indexOf('function queueWaitMessage(');
+  const end=source.indexOf('\nasync function api(',start);
+  const context={}; vm.createContext(context); vm.runInContext(source.slice(start,end),context);
+  const waiting={state:'approved'};
+  const blocker={state:'submitted',name:'Tidligere print'};
+  assert.match(context.queueWaitMessage(waiting,[blocker],true),/Tidligere print/);
+  assert.match(context.queueWaitMessage(waiting,[blocker],true),/byggepladen/);
+  assert.match(context.queueWaitMessage(waiting,[],false),/online/);
+  assert.match(context.queueWaitMessage(waiting,[{...blocker,state:'dispatched'}],true),/sendt til Pi/);
+  assert.equal(context.queueWaitMessage({state:'resolved'},[blocker],true),'');
+});
+
 function setup(fetch) {
   const nodes = new Map();
   const all = [];

@@ -9,6 +9,13 @@ let previewWidget = null;
 let previewKey = '';
 let previewRequest = 0;
 let previewController = null;
+function queueWaitMessage(job, jobs, online) {
+  if (job.state !== 'approved') return '';
+  const blocker = jobs.find(item => ['submitted','unknown','dispatched'].includes(item.state));
+  if (blocker?.state === 'dispatched') return `Venter på jobbet “${blocker.name}”, som er sendt til Pi’en.`;
+  if (blocker) return `Venter på kontrol af “${blocker.name}”. Når printeren er færdig, skal printet fjernes og byggepladen kontrolleres. Bekræft derefter på det tidligere job for at frigive køen.`;
+  return online ? 'Godkendt – afventer afhentning fra Pi’en.' : 'Godkendt – venter på, at Pi’en kommer online.';
+}
 async function api(path, options = {}) {
   const response = await fetch(path, options);
   const body = await response.json();
@@ -149,6 +156,11 @@ async function refresh() {
       const name = document.createElement('strong'); name.textContent = job.name;
       const state = document.createElement('small'); state.textContent = `${labels[job.state] || job.state} · ${new Date(job.created * 1000).toLocaleString('da-DK')}`;
       details.append(name, state); row.append(details);
+      const waiting = queueWaitMessage(job, data.jobs, data.agent_online);
+      if (waiting) {
+        state.textContent = `${waiting.startsWith('Venter på') ? 'Godkendt · venter i kø' : 'Godkendt'} · ${new Date(job.created * 1000).toLocaleString('da-DK')}`;
+        const notice = document.createElement('p'); notice.className = 'queue-notice'; notice.textContent = waiting; details.append(notice);
+      }
       if (job.model_info) {
         const modelButton=document.createElement('button'); modelButton.className='secondary'; modelButton.textContent=job.preview_ready?'Vis model og slicet preview':'Åbn model og slice'; modelButton.onclick=()=>openModel(job.id); row.append(modelButton);
         const size=document.createElement('small'); size.textContent=`Model: ${job.model_info.dimensions_mm.join(' × ')} mm`; details.append(size);
@@ -167,9 +179,12 @@ async function refresh() {
       }
       if (job.state === 'queued') { const button = document.createElement('button'); button.textContent = 'Vælg filament og godkend'; button.disabled = !job.analysis?.supported || !fresh; button.onclick = () => approve(job); row.append(button); }
       if (['unknown','dispatched','submitted'].includes(job.state)) {
-        const button = document.createElement('button'); button.className = 'secondary'; button.textContent = 'Luk efter kontrol';
+        const button = document.createElement('button'); button.className = 'secondary'; button.textContent = job.state === 'submitted' ? 'Bekræft tom byggeplade og frigiv kø' : 'Luk efter kontrol';
+        const notice = document.createElement('p'); notice.className = 'queue-notice';
+        notice.textContent = job.state === 'submitted' ? 'Køen er sat på pause til kontrol af byggepladen. Vent til printeren er færdig, fjern printet, og kontrollér at pladen er tom. Allerede godkendte job kan starte automatisk, når du frigiver køen.' : job.state === 'unknown' ? 'Dette job kræver kontrol på printeren og holder køen tilbage. Kontrollér printeren og byggepladen, før du lukker jobbet.' : 'Jobbet er sendt til Pi’en. Afvent resultatet; luk kun manuelt efter kontrol på printeren.';
+        details.append(notice);
         button.onclick = async () => {
-          if (!window.confirm('Har du kontrolleret jobbet på Pi’en? Lukning frigiver køen og genstarter eller stopper ikke jobbet.')) return;
+          if (!window.confirm('Er printeren færdig eller stoppet, og har du fjernet printet og kontrolleret, at byggepladen er tom? Når du frigiver køen, kan det næste allerede godkendte job starte automatisk.')) return;
           try {
             await api(`/api/jobs/${job.id}/resolve`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm_job_id:job.id,printer_checked_idle:true})});
             await refresh();
