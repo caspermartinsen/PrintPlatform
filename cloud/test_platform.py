@@ -190,6 +190,17 @@ class PlatformTests(unittest.TestCase):
         self.assertFalse(path.exists())
         self.assertEqual(self.browser('/api/status')['jobs'][0]['state'],'simulated')
 
+    def test_local_live_gate_rejects_missing_activation_or_confirmation(self):
+        payload={'execution_mode':'live','selection':{'ams_id':0,'slot':1},
+            'printer_ready':True,'confirm_job_id':'00000000-0000-0000-0000-000000000001'}
+        for enabled,confirmation in (('0','START PRINT'),('1','')):
+            with patch.dict('os.environ',{'PRINT_MODE':'live','ALLOW_REMOTE_LIVE':enabled}), patch('server.subprocess.Popen') as launch:
+                with self.assertRaises(urllib.error.HTTPError) as error:
+                    request(self.agent.local,'/v1/jobs/'+payload['confirm_job_id']+'/remote-start',
+                            'local-token',{**payload,'confirm_physical':confirmation})
+                self.assertEqual(error.exception.code,409)
+                launch.assert_not_called()
+
     def test_restart_with_pending_journal_is_unknown(self):
         job_id = self.upload()
         self.approve(job_id)
