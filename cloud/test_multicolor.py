@@ -132,6 +132,8 @@ class MultiColorTests(unittest.TestCase):
     def test_project_rejects_external_xml_entities_and_multiple_plates(self):
         for name,replacement in (
             ('_rels/.rels',b'<Relationships><Relationship TargetMode="External" Target="https://example.invalid/model"/></Relationships>'),
+            ('_rels/.rels',b'<Relationships><Relationship Target="../../etc/passwd"/></Relationships>'),
+            ('_rels/.rels',b'<Relationships><Relationship Target="%2e%2e/%2e%2e/etc/passwd"/></Relationships>'),
             ('Metadata/model_settings.config',b'<!DOCTYPE x [<!ENTITY x "bad">]><config/>'),
             ('Metadata/model_settings.config',b'<config><plate/><plate/></config>')):
             output=io.BytesIO()

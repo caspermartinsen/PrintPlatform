@@ -2,6 +2,7 @@ import math
 import io
 import posixpath
 from pathlib import PurePosixPath
+from urllib.parse import unquote
 import json
 import re
 import struct
@@ -69,10 +70,11 @@ def project_archive(data):
 
 
 def safe_xml(data):
-    if b'<!DOCTYPE' in data.upper() or b'<!ENTITY' in data.upper():
+    text = data.decode('utf-8-sig')
+    if '\x00' in text or '<!DOCTYPE' in text.upper() or '<!ENTITY' in text.upper():
         raise ValueError('XML-entiteter understøttes ikke.')
     try:
-        return ET.fromstring(data)
+        return ET.fromstring(text)
     except ET.ParseError as error:
         raise ValueError('Ugyldige 3MF-modeldata.') from error
 
@@ -113,15 +115,20 @@ def project_info(data):
                     raise ValueError('3MF-relationen er for stor.')
                 relations = safe_xml(archive.read(name))
                 for relation in relations:
-                    target = relation.get('Target','')
+                    target = unquote(relation.get('Target','')).split('#',1)[0]
                     if relation.get('TargetMode','').lower() == 'external' or ':' in target or '\\' in target or target.startswith('//'):
                         raise ValueError('Eksterne 3MF-referencer understøttes ikke.')
+                    base = '' if name == '_rels/.rels' else posixpath.dirname(posixpath.dirname(name))
+                    resolved = posixpath.normpath(target.lstrip('/') if target.startswith('/') else posixpath.join(base,target))
+                    if not target or resolved == '..' or resolved.startswith('../') or resolved not in names:
+                        raise ValueError('3MF-relationen skal pege på en fil inde i arkivet.')
             if not name.lower().endswith('.model'):
                 continue
             if archive.getinfo(name).file_size > 64 * 1024**2:
                 raise ValueError('En 3MF-modeldel er for stor.')
             xml = archive.read(name)
-            if b'<!DOCTYPE' in xml.upper() or b'<!ENTITY' in xml.upper():
+            text = xml.decode('utf-8-sig')
+            if '\x00' in text or '<!DOCTYPE' in text.upper() or '<!ENTITY' in text.upper():
                 raise ValueError('XML-entiteter understøttes ikke.')
             try:
                 for event, element in ET.iterparse(io.BytesIO(xml), events=('start','end')):
@@ -138,6 +145,7 @@ def project_info(data):
                                 raise ValueError('For mange modelpunkter.')
                         for key,value in element.attrib.items():
                             if key.rsplit('}',1)[-1] == 'path':
+                                value = unquote(value)
                                 resolved = posixpath.normpath(value.lstrip('/') if value.startswith('/') else posixpath.join(posixpath.dirname(name),value))
                                 if '\\' in value or ':' in value or resolved.startswith('../') or resolved not in names:
                                     raise ValueError('Modelreferencen skal pege inde i 3MF-filen.')
