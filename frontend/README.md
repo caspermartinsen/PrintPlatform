@@ -260,3 +260,5 @@ En færdigslicet fil med endelsen .3mf genkendes også ud fra indholdet. Modelle
 Farvevalgene vises enkeltvis i godkendelsesdialogen. Farveforskelle kræver accept; profilkonflikter på bare ét filament blokerer fysisk start. Spoleskift kontrolleres for alle valgte filamenter på Pi’en. Nye job lagrer required_plan_version, så en opdateret agent sammen med en gammel lokal service ikke kan modtage flerfarvejob.
 
 De slicede printbaner farves efter G-code-værktøjsskift. Den oprindelige 3MF-modelvisning kan ikke vise alle Bambu-malingsudvidelser; kontrollér den færdigslicede farvefordeling. Filen konverteres ikke til STL under slicing. Browserbaseret maling af STL er ikke en del af denne ændring.
+
+Lagbaserede AMS-farveskift i 3MF bevares som validerede værktøjsskift. Importeret fri G-code-tekst køres ikke; skiftene omsættes af Bambu Studio med de faste profiler.

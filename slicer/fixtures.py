@@ -4,18 +4,19 @@ import json
 import zipfile
 
 
-def project_file(colors=('#FF0000','#0000FF'), painted=False):
+def project_file(colors=('#FF0000','#0000FF'), painted=False, layered=False):
     vertices = [(0,0,0),(8,0,0),(8,8,0),(0,8,0),(0,0,1),(8,0,1),(8,8,1),(0,8,1)]
     triangles = [(0,2,1),(0,3,2),(4,5,6),(4,6,7),(0,1,5),(0,5,4),
                  (1,2,6),(1,6,5),(2,3,7),(2,7,6),(3,0,4),(3,4,7)]
     meshes, objects, instances, build = [], [], [], []
     for index in range(len(colors)):
         item = index + 1
+        assigned = 1 if layered else item
         mesh = '<object id="' + str(item) + '" type="model"><mesh><vertices>'
         mesh += ''.join('<vertex x="%s" y="%s" z="%s"/>' % vertex for vertex in vertices)
         mesh += '</vertices><triangles>' + ''.join('<triangle v1="%s" v2="%s" v3="%s"%s/>' % (*triangle,' paint_color="4"' if painted else '') for triangle in triangles)
         meshes.append(mesh + '</triangles></mesh></object>')
-        objects.append('<object id="%s"><metadata key="name" value="Color %s"/><metadata key="extruder" value="%s"/><part id="%s" subtype="normal_part"><metadata key="extruder" value="%s"/></part></object>' % (item,item,item,item,item))
+        objects.append('<object id="%s"><metadata key="name" value="Color %s"/><metadata key="extruder" value="%s"/><part id="%s" subtype="normal_part"><metadata key="extruder" value="%s"/></part></object>' % (item,item,assigned,item,assigned))
         instances.append('<model_instance><metadata key="object_id" value="%s"/><metadata key="instance_id" value="0"/><metadata key="identify_id" value="%s"/></model_instance>' % (item,item))
         build.append('<item objectid="%s" transform="1 0 0 0 1 0 0 0 1 %s 100 0"/>' % (item,100 + index * 20))
     model = '<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><metadata name="Application">BambuStudio</metadata><metadata name="BambuStudio:3mfVersion">1</metadata><resources>' + ''.join(meshes) + '</resources><build>' + ''.join(build) + '</build></model>'
@@ -28,6 +29,8 @@ def project_file(colors=('#FF0000','#0000FF'), painted=False):
         archive.writestr('3D/3dmodel.model',model)
         archive.writestr('Metadata/project_settings.config',json.dumps(settings))
         archive.writestr('Metadata/model_settings.config','<config>' + ''.join(objects) + '<plate><metadata key="plater_id" value="1"/>' + ''.join(instances) + '</plate></config>')
+        if layered:
+            archive.writestr('Metadata/custom_gcode_per_layer.xml','<custom_gcodes_per_layer><plate><plate_info id="1"/><layer top_z="0.6" type="2" extruder="2" color="#0000FF" extra="" gcode="tool_change"/><mode value="MultiAsSingle"/></plate></custom_gcodes_per_layer>')
     return output.getvalue()
 
 

@@ -157,6 +157,40 @@ def project_info(data):
     return {'kind':'3mf','dimensions_mm':None,'filaments':filaments,'filament_count':len(filaments)}
 
 
+def safe_layer_changes(data, filaments):
+    if len(data) > 1024**2:
+        raise ValueError('For mange lagbaserede skift.')
+    source = safe_xml(data)
+    if source.tag != 'custom_gcodes_per_layer':
+        raise ValueError('Ugyldige lagbaserede farveskift.')
+    plates = source.findall('plate')
+    if len(plates) > 1:
+        raise ValueError('Lagbaserede skift skal høre til én plade.')
+    entries = plates[0] if plates else source
+    if plates:
+        info = entries.find('plate_info')
+        if info is not None and info.get('id') != '1':
+            raise ValueError('Farveskiftet skal høre til den første plade.')
+    root = ET.Element('custom_gcodes_per_layer')
+    plate = ET.SubElement(root,'plate')
+    ET.SubElement(plate,'plate_info',id='1')
+    count = 0
+    for layer in entries.findall('layer'):
+        is_tool_change = layer.get('type') == '2' or layer.get('type') is None and layer.get('gcode') == 'tool_change'
+        if not is_tool_change:
+            continue
+        z, index = float(layer.get('top_z','nan')), int(layer.get('extruder','0'))
+        if not math.isfinite(z) or not 0 < z <= 256 or not 1 <= index <= len(filaments):
+            raise ValueError('Ugyldigt lag eller filament til farveskift.')
+        ET.SubElement(plate,'layer',top_z=str(z),type='2',extruder=str(index),
+                      color=filaments[index-1]['color'],extra='',gcode='tool_change')
+        count += 1
+    if not count:
+        return None
+    ET.SubElement(plate,'mode',value='MultiAsSingle')
+    return ET.tostring(root,encoding='utf-8',xml_declaration=True)
+
+
 def prepare_project(data, path, filaments):
     """Preserve meshes, assembly and paint; replace imported executable settings."""
     info = project_info(data)
@@ -169,8 +203,13 @@ def prepare_project(data, path, filaments):
     with project_archive(data) as source, zipfile.ZipFile(path,'w',compression=zipfile.ZIP_DEFLATED) as target:
         for entry in source.infolist():
             name = entry.filename
+            if name == 'Metadata/custom_gcode_per_layer.xml':
+                changes = safe_layer_changes(source.read(entry),filaments)
+                if changes is not None:
+                    target.writestr(name,changes)
+                continue
             if name == 'Metadata/project_settings.config' or name.endswith('.gcode') or name in (
-                    'Metadata/custom_gcode_per_layer.xml','Metadata/layer_config_ranges.xml',
+                    'Metadata/layer_config_ranges.xml',
                     'Metadata/layer_heights_profile.txt','Metadata/filament_sequence.json'):
                 continue
             content = source.read(entry)

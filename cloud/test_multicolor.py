@@ -120,7 +120,7 @@ class MultiColorTests(unittest.TestCase):
                 if name=='Metadata/model_settings.config':
                     content=content.replace(b'<object id="1">',b'<object id="1"><metadata key="post_process" value="DO_NOT_EXECUTE"/>')
                 target.writestr(name,content)
-            target.writestr('Metadata/custom_gcode_per_layer.xml','DO_NOT_EXECUTE')
+            target.writestr('Metadata/custom_gcode_per_layer.xml','<custom_gcodes_per_layer><layer top_z="0.6" type="4" extruder="1" color="" extra="DO_NOT_EXECUTE" gcode="DO_NOT_EXECUTE"/></custom_gcodes_per_layer>')
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'safe.3mf'
             prepare_project(output.getvalue(),path,[{'color':color,'profile_name':'PLA Basic'} for color in ('#FF0000','#0000FF')])
@@ -194,3 +194,15 @@ class MultiColorTests(unittest.TestCase):
         plan=mapping(select(analysis,printer(),{'bed_clear':True,'filaments':choices}))
         self.assertEqual(json.loads(plan['ams_mapping']),[0,1,2,3])
         self.assertEqual(json.loads(plan['ams_mapping2']),[{'ams_id':0,'slot_id':index} for index in range(4)])
+
+
+    def test_layer_tool_changes_survive_without_executable_user_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'layered.3mf'
+            prepare_project(project_file(layered=True),path,[{'color':color,'profile_name':'PLA Basic'} for color in ('#FF0000','#0000FF')])
+            with zipfile.ZipFile(path) as archive:
+                data=archive.read('Metadata/custom_gcode_per_layer.xml')
+                self.assertIn(b'type="2"',data)
+                self.assertIn(b'extruder="2"',data)
+                self.assertIn(b'gcode="tool_change"',data)
+                self.assertIn(b'extra=""',data)

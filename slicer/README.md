@@ -111,7 +111,7 @@ CLI-dokumentation: https://github.com/bambulab/BambuStudio/wiki/Command-Line-Usa
 
 Slicer-version 2 modtager native Bambu Studio-projekter. Farvede dele, assembly-transformer og malingsdata bevares. CLI får en fuld, betroet filamentprofil pr. projektfilament; maskine og proces sættes fortsat til P2S, 0,4 mm og Textured PEI. Klargøring understøtter de samme tre PLA-profiler som tidligere. Et AMS-valg for en anden materialetype afvises.
 
-Importerede proces-/maskinindstillinger erstattes af de faste profiler. Egne per-lag-G-code, scripts og variable lagprofiler bruges ikke. Støtte er fortsat slået fra; prime tower aktiveres ved flere projektfilamenter. Projektets pladeplacering bevares, mens STL arrangeres som før. Kun én plade og millimeter understøttes. Alle faktiske outputfilamenters indeks, profil og farve kontrolleres mod valgene.
+Importerede proces-/maskinindstillinger erstattes af de faste profiler. Lagbaserede AMS-værktøjsskift bevares som validerede filament-/højdevalg. Egne G-code-tekster, scripts og variable lagprofiler bruges ikke. Støtte er fortsat slået fra; prime tower aktiveres ved flere projektfilamenter. Projektets pladeplacering bevares, mens STL arrangeres som før. Kun én plade og millimeter understøttes. Alle faktiske outputfilamenters indeks, profil og farve kontrolleres mod valgene.
 
 Cloud kræver en opdateret worker, før 3MF-projekter kan klargøres. Gamle workers får ikke sådanne jobs. Opdatér derfor begge Dokploy-applikationer. Pi-agent og lokal service skal desuden have plan-version 3, før flerfarvejobs kan godkendes eller afleveres.
 
