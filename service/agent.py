@@ -7,6 +7,7 @@ import time
 import urllib.request
 import urllib.error
 import uuid
+from print_plan import printer_available
 
 
 def request(base, path, token, body=None, raw=False, extra=None):
@@ -83,7 +84,7 @@ class Agent:
         for local_id in response.get('resolutions',[]):
             local_job = next((item for item in status['jobs'] if item['id']==local_id),None)
             printer = status['printer']
-            if local_job and local_job['state'] in ('submitted','unknown') and printer.get('connected') and not printer.get('stale') and printer.get('state') in ('IDLE','FINISH') and printer.get('error_code')==0:
+            if local_job and local_job['state'] in ('submitted','unknown') and printer_available(printer):
                 request(self.local,'/v1/jobs/'+local_id+'/resolve',self.api_token,{'printer_checked_idle':True})
         job = response['job']
         if job is None:

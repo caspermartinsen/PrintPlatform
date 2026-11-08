@@ -4,18 +4,33 @@ import tempfile
 import unittest
 import zipfile
 
-from print_plan import analyze, select, mapping, live_ready
+from print_plan import analyze, select, mapping, live_ready, printer_available
 
 
 class PrintPlanTests(unittest.TestCase):
     def test_live_requires_idle_matching_profile_and_p2s(self):
         analysis={'printer_model':'Bambu Lab P2S'}
-        printer={'state':'IDLE','error_code':0}
+        printer={'connected':True,'stale':False,'state':'IDLE','error_code':0}
         live_ready(analysis,printer,{'warnings':[]})
         for state in ('RUNNING','PAUSE','FAILED','unknown'):
             with self.assertRaises(ValueError): live_ready(analysis,{**printer,'state':state},{'warnings':[]})
         with self.assertRaises(ValueError): live_ready({'printer_model':'Other'},printer,{'warnings':[]})
         with self.assertRaises(ValueError): live_ready(analysis,printer,{'warnings':['Filamentprofilen afviger.']})
+
+    def test_cancelled_print_requires_fresh_status_no_error_and_zero_remaining(self):
+        printer={'connected':True,'stale':False,'state':'FAILED','error_code':0,'remaining_minutes':0}
+        self.assertTrue(printer_available(printer))
+        live_ready({'printer_model':'Bambu Lab P2S'},printer,{'warnings':[]})
+        for change in ({'error_code':1},{'error_code':None},{'error_code':False},
+                       {'remaining_minutes':1},{'remaining_minutes':None},{'remaining_minutes':False},
+                       {'connected':False},{'stale':True},{'stale':None},
+                       {'state':'RUNNING'},{'state':'PAUSE'},{'state':'PREPARE'},{'state':'SLICING'},{'state':'unknown'}):
+            with self.subTest(change=change):
+                self.assertFalse(printer_available({**printer,**change}))
+                with self.assertRaises(ValueError):
+                    live_ready({'printer_model':'Bambu Lab P2S'},{**printer,**change},{'warnings':[]})
+        with self.assertRaises(ValueError):
+            select(self.analysis,{**printer,'ams_slots':[self.slot]},{**self.payload,'bed_clear':False})
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.path = Path(self.directory.name) / 'model.3mf'

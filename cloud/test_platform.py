@@ -130,6 +130,7 @@ class PlatformTests(unittest.TestCase):
             self.agent.tick()
 
     def test_live_acknowledgement_retry_without_second_driver_call(self):
+        self.local.telemetry.ingest(b'{"print":{"gcode_state":"FAILED","mc_remaining_time":0}}')
         job_id = self.upload()
         template = Path(self.directory.name) / 'params.json'
         template.write_text('{}')

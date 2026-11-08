@@ -10,11 +10,13 @@ Eksisterende simuleringsjob forbliver simulerede, også når live senere aktiver
 
 Når begge sider er aktiveret, får hvert jobs dialog et særskilt valg af fysisk
 printstart. Standard er altid simulering. Fysisk start kræver tom-pladebekræftelse,
-AMS-valg og teksten `START PRINT`. Både cloud og Pi kræver IDLE/FINISH, ingen
+AMS-valg og teksten `START PRINT`. Både cloud og Pi kræver en ledig printer, ingen
 rapporteret printerfejl, frisk AMS-status, P2S-slicing og matchende filamentprofil.
 En accepteret farveforskel tillades; materialet og filamentprofilen skal passe.
-En printer der stadig rapporterer FAILED skal kontrolleres og sættes klar på
-printeren; webappen gætter ikke at den er klar.
+IDLE/FINISH accepteres. FAILED efter et afbrudt print accepteres også, når
+status er frisk, fejlkoden er 0, og den rapporterede resttid er 0 minutter.
+FAILED omdøbes ikke til IDLE. Manglende data, egentlig fejl eller aktivt/pauset
+print afvises fortsat. Operatøren skal kontrollere og bekræfte ryddet byggeplade.
 
 Agenten gemmer lokalt job-id før startkaldet og følger derefter kun status via GET.
 Ved genstart genoptages statusaflæsningen, ikke printkommandoen. Mistet kvittering
@@ -24,7 +26,7 @@ Fejl eller timeout bliver unknown og genforsøges aldrig automatisk.
 
 Submitted reserverer både cloud-kø og lokal kø. Efter fysisk kontrol af færdig/tom
 printer kan **Luk efter kontrol** frigive cloud-jobbet. Agenten frigiver derefter
-den lokale reservation, når printeren rapporterer frisk IDLE/FINISH uden fejl.
+den lokale reservation, når den samme kontrol melder printeren ledig uden fejl.
 Print slutter ikke automatisk ud fra løs telemetri, fordi den ikke entydigt
 identificerer jobbet. Ingen fjernstop eller automatisk genstart er tilføjet.
 
