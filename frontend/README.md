@@ -24,6 +24,12 @@ genafleveres uden ny start. Driverkode 0 bliver `submitted`: **driver har accept
 printkommandoen**, ikke dokumentation for færdigt print eller første lag.
 Fejl eller timeout bliver unknown og genforsøges aldrig automatisk.
 
+Jobkvitteringer har sanerede tekniske fejlkoder: proces-exitkode, undtagelsestype
+og højst 12 udvalgte driverhændelser med numeriske retur-/statuskoder.
+Rå beskeder, stdout/stderr, adgangskoder, certifikater og forbindelsesparametre
+gemmes ikke. UI viser **Tekniske fejlkoder**, når sådanne data findes.
+Ældre job kan ikke få deres allerede kasserede driveroutput genskabt.
+
 Submitted reserverer både cloud-kø og lokal kø. Efter fysisk kontrol af færdig/tom
 printer kan **Luk efter kontrol** frigive cloud-jobbet. Agenten frigiver derefter
 den lokale reservation, når den samme kontrol melder printeren ledig uden fejl.

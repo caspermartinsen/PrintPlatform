@@ -121,6 +121,13 @@ async function refresh() {
       details.append(analysis);
       if (job.selection) { const selection = document.createElement('small'); selection.textContent = `Valgt: AMS ${job.selection.ams_id + 1}, plads ${job.selection.slot} · ${job.selection.name || job.selection.material}`; details.append(selection); }
       if (job.execution_mode) { const mode = document.createElement('small'); mode.textContent=job.execution_mode==='live'?'Handling: fysisk print':'Handling: simulering'; details.append(mode); }
+      if (job.receipt) {
+        const receipt=JSON.parse(job.receipt); const diagnostic=receipt.diagnostics;
+        if (diagnostic && (diagnostic.exit_code != null || diagnostic.error_type || diagnostic.events?.length)) {
+          const report=document.createElement('details'); const heading=document.createElement('summary'); heading.textContent='Tekniske fejlkoder';
+          const text=document.createElement('pre'); text.textContent=JSON.stringify(diagnostic,null,2); report.append(heading,text); details.append(report);
+        }
+      }
       if (job.state === 'queued') { const button = document.createElement('button'); button.textContent = 'Vælg filament og godkend'; button.disabled = !job.analysis?.supported || !fresh; button.onclick = () => approve(job); row.append(button); }
       if (['unknown','dispatched','submitted'].includes(job.state)) {
         const button = document.createElement('button'); button.className = 'secondary'; button.textContent = 'Luk efter kontrol';

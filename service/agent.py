@@ -116,8 +116,11 @@ class Agent:
                 time.sleep(0.1)
             else:
                 return
-        except Exception:
+        except Exception as error:
             record['state'] = 'unknown'
+            record['diagnostics'] = {'error_type':type(error).__name__}
+            if isinstance(error,urllib.error.HTTPError):
+                record['diagnostics']['http_status'] = error.code
         self.save(path, record)
         self.remote('/agent/result', record)
         path.unlink()
@@ -128,6 +131,8 @@ class Agent:
         if job and job['state']=='starting':
             return False
         record['state'] = job['state'] if job and job['state'] in ('simulated','submitted') else 'unknown'
+        if job and job.get('diagnostics'):
+            record['diagnostics'] = json.loads(job['diagnostics'])
         return True
 
 

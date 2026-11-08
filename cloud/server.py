@@ -13,7 +13,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'service'))
-from server import validate as validate_archive
+from server import validate as validate_archive, safe_diagnostics
 from print_plan import analyze, select, live_ready
 
 
@@ -207,7 +207,8 @@ class Handler(BaseHTTPRequestHandler):
                 target = connection.execute('SELECT execution_mode FROM jobs WHERE id=?',(report['id'],)).fetchone()
                 if target and (report['state']=='submitted' and target['execution_mode']!='live' or report['state']=='simulated' and target['execution_mode']=='live'):
                     raise ValueError('Result does not match approved execution mode')
-                receipt = {'local_job_id':report.get('local_job_id'), 'driver_accepted':report['state']=='submitted'}
+                receipt = {'local_job_id':report.get('local_job_id'), 'driver_accepted':report['state']=='submitted',
+                           'diagnostics':safe_diagnostics(report.get('diagnostics',{}))}
                 changed = connection.execute("UPDATE jobs SET state=?,receipt=? WHERE id=? AND state IN ('dispatched', ?)", (report['state'], json.dumps(receipt), report['id'], report['state'])).rowcount
                 if not changed:
                     changed = connection.execute("SELECT 1 FROM jobs WHERE id=? AND state='resolved'", (report['id'],)).fetchone() is not None

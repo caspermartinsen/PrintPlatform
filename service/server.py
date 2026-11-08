@@ -22,6 +22,30 @@ ACTIVE = ('starting', 'submitted', 'unknown')
 MAX_UPLOAD = 100 * 1024 * 1024
 
 
+def safe_diagnostics(source):
+    if not isinstance(source, dict):
+        return {}
+    result = {}
+    for key in ('exit_code', 'http_status'):
+        if type(source.get(key)) is int:
+            result[key] = source[key]
+    if source.get('error_type') in ('OSError','ValueError','TimeoutExpired','PermissionError','FileNotFoundError','RuntimeError','HTTPError'):
+        result['error_type'] = source['error_type']
+    result['events'] = []
+    events = source.get('events', [])
+    if not isinstance(events,list):
+        return result
+    for event in events[-12:]:
+        if not isinstance(event,dict) or event.get('_kind') not in ('local_connect','session_ready','connect_printer_call','action_dispatched','update_status','finished','kickstart_pushall'):
+            continue
+        clean = {'_kind':event['_kind']}
+        for key in ('rc','status','code','got','rc_action'):
+            if type(event.get(key)) in (int,bool):
+                clean[key] = event[key]
+        result['events'].append(clean)
+    return result
+
+
 def validate(path):
     try:
         with zipfile.ZipFile(path) as archive:
@@ -59,7 +83,7 @@ class Store:
             connection.execute('CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, name TEXT, sha256 TEXT, state TEXT, created REAL)')
             connection.execute("UPDATE jobs SET state='unknown' WHERE state='starting'")
             columns = {row[1] for row in connection.execute('PRAGMA table_info(jobs)')}
-            for column in ('selection', 'plan', 'execution_mode'):
+            for column in ('selection', 'plan', 'execution_mode', 'diagnostics'):
                 if column not in columns:
                     connection.execute('ALTER TABLE jobs ADD COLUMN ' + column + ' TEXT')
         for temporary in self.root.glob('*.params.json'):
@@ -114,6 +138,7 @@ class Store:
 
     def run(self, job_id):
         state = 'unknown'
+        diagnostics = {'events':[]}
         try:
             path = self.root / (job_id + '.gcode.3mf')
             with self.db() as connection:
@@ -154,19 +179,38 @@ class Store:
                            '--connect-settle-ms', '15000', '--timeout', '180', '--no-watchdog-defeat']
                 environment = {key: value for key, value in os.environ.items()
                                if key not in ('API_TOKEN', 'BAMBU_ACCESS_CODE')}
-                with subprocess.Popen(command, cwd=repo, env=environment, stdout=subprocess.DEVNULL,
-                                      stderr=subprocess.DEVNULL, start_new_session=True) as process:
+                with subprocess.Popen(command, cwd=repo, env=environment, stdout=subprocess.PIPE,
+                                      stderr=subprocess.STDOUT, text=True, errors='replace', start_new_session=True) as process:
+                    def collect():
+                        for line in iter(lambda: process.stdout.readline(65536), ''):
+                            if not isinstance(line,str):
+                                break
+                            try:
+                                event = json.loads(line)
+                            except ValueError:
+                                continue
+                            clean = safe_diagnostics({'events':[event]})['events']
+                            if clean:
+                                diagnostics['events'] = (diagnostics['events'] + clean)[-12:]
+                    reader = threading.Thread(target=collect,daemon=True)
+                    reader.start()
                     try:
                         result = process.wait(timeout=240)
                     except subprocess.TimeoutExpired:
                         os.killpg(process.pid, signal.SIGKILL)
                         process.wait()
                         result = -1
+                        diagnostics['error_type'] = 'TimeoutExpired'
+                    reader.join(timeout=2)
+                    diagnostics['exit_code'] = result
                 state = 'submitted' if result == 0 else 'unknown'
-        except Exception:
+        except Exception as error:
+            diagnostics['error_type'] = type(error).__name__
             state = 'unknown'
         finally:
             (self.root / (job_id + '.params.json')).unlink(missing_ok=True)
+            with self.db() as connection:
+                connection.execute('UPDATE jobs SET diagnostics=? WHERE id=?',(json.dumps(safe_diagnostics(diagnostics)),job_id))
             self.state(job_id, state)
 
 

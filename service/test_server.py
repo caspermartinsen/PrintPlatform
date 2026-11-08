@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-from server import Handler, HTTPServer, Store, validate
+from server import Handler, HTTPServer, Store, validate, safe_diagnostics
 
 
 def archive(entries=None):
@@ -25,6 +25,12 @@ def archive(entries=None):
 
 
 class ServiceTests(unittest.TestCase):
+    def test_diagnostics_never_include_raw_messages_or_credentials(self):
+        diagnostic=safe_diagnostics({'exit_code':1,'password':'SECRET','error_type':'SECRET',
+            'events':[{'_kind':'local_message','msg':'SECRET'},
+                      {'_kind':'action_dispatched','rc':-4030,'msg':'SECRET','access_code':'SECRET'}]})
+        self.assertNotIn('SECRET',json.dumps(diagnostic))
+        self.assertEqual(diagnostic['events'],[{'_kind':'action_dispatched','rc':-4030}])
     def test_update_lock_blocks_start_without_changing_queue(self):
         job_id = self.upload()
         with (self.store.root / 'update.lock').open('a') as guard:
@@ -112,6 +118,7 @@ class ServiceTests(unittest.TestCase):
                        'BAMBU_DEV_IP': '127.0.0.1', 'BAMBU_ACCESS_CODE': 'fake', 'BAMBU_CERT': '/fake'}
         with patch.dict(os.environ, environment), patch('server.subprocess.Popen') as launch:
             launch.return_value.__enter__.return_value.wait.return_value = 0
+            launch.return_value.__enter__.return_value.stdout = io.StringIO('{"_kind":"action_dispatched","rc":0,"msg":"SECRET"}\n')
             def capture(*args, **kwargs):
                 plan = json.loads((self.store.root / (job_id + '.params.json')).read_text())
                 self.assertEqual(json.loads(plan['ams_mapping']), [2])
@@ -124,6 +131,10 @@ class ServiceTests(unittest.TestCase):
             self.assertIn('local_print', command)
             self.assertNotIn('API_TOKEN', launch.call_args.kwargs['env'])
         self.assertEqual(self.store.jobs()[0]['state'], 'submitted')
+        diagnostic=json.loads(self.store.jobs()[0]['diagnostics'])
+        self.assertEqual(diagnostic['exit_code'],0)
+        self.assertEqual(diagnostic['events'],[{'_kind':'action_dispatched','rc':0}])
+        self.assertNotIn('SECRET',json.dumps(diagnostic))
 
     def test_driver_failure_never_requeues(self):
         job_id = self.upload()
