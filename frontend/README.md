@@ -30,6 +30,14 @@ Rå beskeder, stdout/stderr, adgangskoder, certifikater og forbindelsesparametre
 gemmes ikke. UI viser **Tekniske fejlkoder**, når sådanne data findes.
 Ældre job kan ikke få deres allerede kasserede driveroutput genskabt.
 
+Driverprocessen arver ignoreret SIGPIPE, så en lukket forbindelse under nedlukning
+ikke automatisk afslutter processen med signal 13. Hvis driveren alligevel afslutter
+med SIGPIPE, accepteres kun den særlige sekvens `action_dispatched rc=0` efterfulgt
+af `finished status=6 code=0`. Den gemmes som submitted med advarslen
+`SIGPIPE_AFTER_ACCEPT` og den oprindelige exitkode. Manglende eller negative
+kvitteringer forbliver unknown; andre signaler genfortolkes ikke som succes.
+Submitted betyder fortsat accepteret startkommando, ikke færdigt fysisk print.
+
 Submitted reserverer både cloud-kø og lokal kø. Efter fysisk kontrol af færdig/tom
 printer kan **Luk efter kontrol** frigive cloud-jobbet. Agenten frigiver derefter
 den lokale reservation, når den samme kontrol melder printeren ledig uden fejl.

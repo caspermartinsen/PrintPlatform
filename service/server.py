@@ -22,6 +22,22 @@ ACTIVE = ('starting', 'submitted', 'unknown')
 MAX_UPLOAD = 100 * 1024 * 1024
 
 
+def driver_accepted(exit_code, events):
+    if exit_code == 0:
+        return True
+    if exit_code != -signal.SIGPIPE:
+        return False
+    dispatched = False
+    finished = False
+    for event in events:
+        if event.get('_kind') == 'action_dispatched':
+            dispatched = type(event.get('rc')) is int and event['rc'] == 0
+            finished = False
+        elif event.get('_kind') == 'finished':
+            finished = dispatched and event.get('status') == 6 and type(event.get('code')) is int and event['code'] == 0
+    return finished
+
+
 def safe_diagnostics(source):
     if not isinstance(source, dict):
         return {}
@@ -31,6 +47,8 @@ def safe_diagnostics(source):
             result[key] = source[key]
     if source.get('error_type') in ('OSError','ValueError','TimeoutExpired','PermissionError','FileNotFoundError','RuntimeError','HTTPError'):
         result['error_type'] = source['error_type']
+    if source.get('shutdown_warning') == 'SIGPIPE_AFTER_ACCEPT':
+        result['shutdown_warning'] = 'SIGPIPE_AFTER_ACCEPT'
     result['events'] = []
     events = source.get('events', [])
     if not isinstance(events,list):
@@ -180,7 +198,8 @@ class Store:
                 environment = {key: value for key, value in os.environ.items()
                                if key not in ('API_TOKEN', 'BAMBU_ACCESS_CODE')}
                 with subprocess.Popen(command, cwd=repo, env=environment, stdout=subprocess.PIPE,
-                                      stderr=subprocess.STDOUT, text=True, errors='replace', start_new_session=True) as process:
+                                      stderr=subprocess.STDOUT, text=True, errors='replace', start_new_session=True,
+                                      restore_signals=False) as process:
                     def collect():
                         for line in iter(lambda: process.stdout.readline(65536), ''):
                             if not isinstance(line,str):
@@ -203,7 +222,10 @@ class Store:
                         diagnostics['error_type'] = 'TimeoutExpired'
                     reader.join(timeout=2)
                     diagnostics['exit_code'] = result
-                state = 'submitted' if result == 0 else 'unknown'
+                accepted = driver_accepted(result,diagnostics['events'])
+                if accepted and result == -signal.SIGPIPE:
+                    diagnostics['shutdown_warning'] = 'SIGPIPE_AFTER_ACCEPT'
+                state = 'submitted' if accepted else 'unknown'
         except Exception as error:
             diagnostics['error_type'] = type(error).__name__
             state = 'unknown'

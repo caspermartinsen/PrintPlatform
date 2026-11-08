@@ -1,6 +1,7 @@
 import base64
 import fcntl
 import io
+import signal
 import json
 from pathlib import Path
 import tempfile
@@ -138,7 +139,8 @@ class PlatformTests(unittest.TestCase):
             'BAMBU_REPO':self.directory.name,'BAMBU_PARAMS':str(template),'BAMBU_DEV_ID':'fake',
             'BAMBU_DEV_IP':'127.0.0.1','BAMBU_ACCESS_CODE':'fake','BAMBU_CERT':'/fake'}
         with patch.dict('os.environ',environment), patch('server.subprocess.Popen') as launch:
-            launch.return_value.__enter__.return_value.wait.return_value=0
+            launch.return_value.__enter__.return_value.wait.return_value=-signal.SIGPIPE
+            launch.return_value.__enter__.return_value.stdout=io.StringIO('{"_kind":"action_dispatched","rc":0}\n{"_kind":"finished","status":6,"code":0}\n')
             self.agent.tick()
             payload={'confirm_job_id':job_id,'ams_id':0,'slot':1,'bed_clear':True,
                 'accept_differences':True,'execution_mode':'live','confirm_physical':'START PRINT'}
@@ -154,6 +156,7 @@ class PlatformTests(unittest.TestCase):
             job=self.browser('/api/status')['jobs'][0]
             self.assertEqual(job['state'],'submitted')
             self.assertTrue(json.loads(job['receipt'])['driver_accepted'])
+            self.assertEqual(json.loads(job['receipt'])['diagnostics']['shutdown_warning'],'SIGPIPE_AFTER_ACCEPT')
             self.assertEqual(len(self.local.store.jobs()),1)
             self.browser('/api/jobs/'+job_id+'/resolve',json.dumps({'confirm_job_id':job_id,'printer_checked_idle':True}).encode())
             self.agent.tick()

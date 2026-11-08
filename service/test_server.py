@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import signal
 import tempfile
 import threading
 import time
@@ -13,7 +14,7 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-from server import Handler, HTTPServer, Store, validate, safe_diagnostics
+from server import Handler, HTTPServer, Store, validate, safe_diagnostics, driver_accepted
 
 
 def archive(entries=None):
@@ -25,6 +26,23 @@ def archive(entries=None):
 
 
 class ServiceTests(unittest.TestCase):
+    def test_sigpipe_only_accepted_after_ordered_success_receipts(self):
+        dispatched={'_kind':'action_dispatched','rc':0}
+        finished={'_kind':'finished','status':6,'code':0}
+        self.assertTrue(driver_accepted(-signal.SIGPIPE,[dispatched,finished]))
+        for events in ([],[dispatched],[finished],[finished,dispatched],
+                       [{**dispatched,'rc':-1},finished],
+                       [dispatched,{**finished,'code':-1}],
+                       [dispatched,{**finished,'status':7}]):
+            with self.subTest(events=events):
+                self.assertFalse(driver_accepted(-signal.SIGPIPE,events))
+        self.assertFalse(driver_accepted(-signal.SIGKILL,[dispatched,finished]))
+
+    def test_child_preserves_ignored_sigpipe_without_printer(self):
+        result=subprocess.run(['/bin/sh','-c','kill -PIPE $$; printf survived'],
+                              restore_signals=False,capture_output=True,text=True)
+        self.assertEqual(result.returncode,0)
+        self.assertEqual(result.stdout,'survived')
     def test_diagnostics_never_include_raw_messages_or_credentials(self):
         diagnostic=safe_diagnostics({'exit_code':1,'password':'SECRET','error_type':'SECRET',
             'events':[{'_kind':'local_message','msg':'SECRET'},
@@ -130,6 +148,7 @@ class ServiceTests(unittest.TestCase):
             command = launch.call_args.args[0]
             self.assertIn('local_print', command)
             self.assertNotIn('API_TOKEN', launch.call_args.kwargs['env'])
+            self.assertFalse(launch.call_args.kwargs['restore_signals'])
         self.assertEqual(self.store.jobs()[0]['state'], 'submitted')
         diagnostic=json.loads(self.store.jobs()[0]['diagnostics'])
         self.assertEqual(diagnostic['exit_code'],0)
