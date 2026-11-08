@@ -1,5 +1,6 @@
 const element = id => document.getElementById(id);
 const labels = {queued:'Afventer godkendelse',approved:'Klar til Pi',dispatched:'Sendt til Pi',simulated:'Simulering gennemført',unknown:'Kræver gennemgang',resolved:'Gennemgået og lukket'};
+let latestPrinter = null;
 async function api(path, options = {}) {
   const response = await fetch(path, options);
   const body = await response.json();
@@ -9,12 +10,47 @@ async function api(path, options = {}) {
 async function approve(job) {
   element('approvalName').textContent = job.name;
   const dialog = element('approval');
+  dialog.querySelector('[value="cancel"]').formNoValidate = true;
+  const oldControls = document.getElementById('print-choice');
+  if (oldControls) oldControls.remove();
+  const controls = document.createElement('div'); controls.id = 'print-choice';
+  const filament = job.analysis.filaments[0];
+  const requirement = document.createElement('p');
+  requirement.textContent = `Filen bruger 1 filament: ${filament.material} · ${filament.profile || 'Ukendt profil'} · ${filament.color || 'Ukendt farve'}`;
+  const label = document.createElement('label'); label.textContent = 'Vælg AMS-plads'; label.htmlFor = 'ams-choice';
+  const choice = document.createElement('select'); choice.id = 'ams-choice'; choice.required = true;
+  const placeholder = document.createElement('option'); placeholder.value = ''; placeholder.textContent = 'Vælg filament…'; choice.append(placeholder);
+  for (const slot of latestPrinter?.ams_slots || []) {
+    if (slot.stale || slot.present !== true || slot.material?.toUpperCase() !== filament.material.toUpperCase()) continue;
+    const option = document.createElement('option'); option.value = JSON.stringify({ams_id:slot.ams_id,slot:slot.slot});
+    option.textContent = `AMS ${slot.ams_id + 1} · Plads ${slot.slot}: ${slot.name || slot.material} · #${slot.color || '?'} · ${slot.remaining_percent ?? '?'} %`;
+    choice.append(option);
+  }
+  const warning = document.createElement('p'); warning.className = 'plan-warning';
+  const differences = document.createElement('input'); differences.type = 'checkbox'; differences.id = 'accept-differences';
+  const differencesLabel = document.createElement('label'); differencesLabel.className = 'check-label'; differencesLabel.append(differences, document.createTextNode('Jeg accepterer de viste forskelle i farve eller profil.'));
+  choice.onchange = () => {
+    differences.checked = false;
+    const selected = choice.value ? JSON.parse(choice.value) : null;
+    const slot = latestPrinter?.ams_slots.find(item => item.ams_id === selected?.ams_id && item.slot === selected?.slot);
+    const warnings = [];
+    if (slot && filament.color?.replace('#','').toUpperCase().slice(0,6) !== slot.color?.toUpperCase().slice(0,6)) warnings.push('Farven afviger fra filen.');
+    if (slot && (!slot.name || !filament.profile.toUpperCase().includes(slot.name.toUpperCase()))) warnings.push('Filamentprofilen afviger eller er ukendt. Slicerens temperaturer ændres ikke.');
+    warning.textContent = warnings.join(' ') || 'Materiale, profil og farve matcher de tilgængelige oplysninger.';
+    differences.required = warnings.length > 0; differencesLabel.hidden = !warnings.length;
+  };
+  const bed = document.createElement('input'); bed.type = 'checkbox'; bed.required = true;
+  const bedLabel = document.createElement('label'); bedLabel.className = 'check-label'; bedLabel.append(bed, document.createTextNode('Jeg har kontrolleret, at byggepladen er tom.'));
+  const hint = document.createElement('p'); hint.textContent = 'Kun samme materialetype kan vælges. Tomme eller ukendte pladser vises ikke. Valget testes i simulering.';
+  differencesLabel.hidden = true;
+  controls.append(requirement, label, choice, hint, warning, differencesLabel, bedLabel);
+  element('approvalName').after(controls);
   dialog.returnValue = 'cancel';
   dialog.showModal();
   dialog.addEventListener('close', async () => {
     if (dialog.returnValue !== 'approve') return;
     try {
-      await api(`/api/jobs/${job.id}/approve`, {method:'POST', headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm_job_id:job.id})});
+      await api(`/api/jobs/${job.id}/approve`, {method:'POST', headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm_job_id:job.id,...JSON.parse(choice.value),bed_clear:bed.checked,accept_differences:differences.checked})});
       await refresh();
     } catch (error) { element('message').textContent = error.message; }
   }, {once:true});
@@ -44,6 +80,7 @@ async function refresh() {
   try {
     const data = await api('/api/status');
     const printer = data.pi?.printer;
+    latestPrinter = data.agent_online ? printer : null;
     renderAMS(printer, data.agent_online);
     const fresh = data.agent_online && printer?.connected && !printer.stale;
     element('connection').textContent = data.agent_online ? 'Pi online' : 'Pi offline';
@@ -60,7 +97,11 @@ async function refresh() {
       const name = document.createElement('strong'); name.textContent = job.name;
       const state = document.createElement('small'); state.textContent = `${labels[job.state] || job.state} · ${new Date(job.created * 1000).toLocaleString('da-DK')}`;
       details.append(name, state); row.append(details);
-      if (job.state === 'queued') { const button = document.createElement('button'); button.textContent = 'Godkend simulering'; button.onclick = () => approve(job); row.append(button); }
+      const analysis = document.createElement('small');
+      analysis.textContent = job.analysis?.supported ? `1 anvendt filament · ${job.analysis.filaments[0].material} · ${job.analysis.filaments[0].profile || 'Ukendt profil'}` : job.analysis?.reason || 'Filanalyse ukendt';
+      details.append(analysis);
+      if (job.selection) { const selection = document.createElement('small'); selection.textContent = `Valgt: AMS ${job.selection.ams_id + 1}, plads ${job.selection.slot} · ${job.selection.name || job.selection.material}`; details.append(selection); }
+      if (job.state === 'queued') { const button = document.createElement('button'); button.textContent = 'Vælg filament og godkend'; button.disabled = !job.analysis?.supported || !fresh; button.onclick = () => approve(job); row.append(button); }
       if (['unknown','dispatched'].includes(job.state)) {
         const button = document.createElement('button'); button.className = 'secondary'; button.textContent = 'Luk efter kontrol';
         button.onclick = async () => {

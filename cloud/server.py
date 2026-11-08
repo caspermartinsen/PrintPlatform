@@ -14,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'service'))
 from server import validate as validate_archive
+from print_plan import analyze, select
 
 
 class Platform(HTTPServer):
@@ -26,6 +27,10 @@ class Platform(HTTPServer):
         with self.db() as connection:
             connection.execute('CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, name TEXT, sha256 TEXT, state TEXT, created REAL)')
             connection.execute('CREATE TABLE IF NOT EXISTS telemetry (id INTEGER PRIMARY KEY, body TEXT, seen REAL)')
+            columns = {row[1] for row in connection.execute('PRAGMA table_info(jobs)')}
+            for column in ('analysis', 'selection'):
+                if column not in columns:
+                    connection.execute('ALTER TABLE jobs ADD COLUMN ' + column + ' TEXT')
         super().__init__(address, Handler)
 
     @contextlib.contextmanager
@@ -107,6 +112,9 @@ class Handler(BaseHTTPRequestHandler):
                 jobs = [dict(row) for row in connection.execute('SELECT * FROM jobs ORDER BY created DESC LIMIT 1000')]
                 telemetry = connection.execute('SELECT * FROM telemetry WHERE id=1').fetchone()
             seen = telemetry['seen'] if telemetry else None
+            for job in jobs:
+                job['analysis'] = json.loads(job['analysis']) if job['analysis'] else analyze(platform.root / (job['id'] + '.gcode.3mf'))
+                job['selection'] = json.loads(job['selection']) if job['selection'] else None
             self.respond(200, {'jobs': jobs, 'agent_online': seen is not None and time.time() - seen < 45,
                                'last_seen': seen, 'pi': json.loads(telemetry['body']) if telemetry else None})
         elif self.command == 'POST' and self.path == '/api/jobs':
@@ -129,18 +137,33 @@ class Handler(BaseHTTPRequestHandler):
                 validate_archive(path)
                 digest = hashlib.sha256(data).hexdigest()
                 with platform.db() as connection:
-                    connection.execute('INSERT INTO jobs VALUES (?,?,?,?,?)', (job_id, name, digest, 'queued', time.time()))
+                    connection.execute('INSERT INTO jobs (id,name,sha256,state,created,analysis) VALUES (?,?,?,?,?,?)', (job_id, name, digest, 'queued', time.time(), json.dumps(analyze(path))))
             except Exception:
                 path.unlink(missing_ok=True)
                 raise
             self.respond(201, {'id': job_id})
         elif self.command == 'POST' and re.fullmatch(r'/api/jobs/[a-f0-9-]{36}/(approve|resolve)', self.path):
             job_id = self.path.split('/')[3]
-            if json.loads(self.body()) != {'confirm_job_id': job_id}:
+            payload = json.loads(self.body())
+            if payload.get('confirm_job_id') != job_id:
                 raise ValueError('Confirmation required')
             with platform.db() as connection:
                 if self.path.endswith('/approve'):
-                    changed = connection.execute("UPDATE jobs SET state='approved' WHERE id=? AND state='queued'", (job_id,)).rowcount
+                    job = connection.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
+                    if not job or job['state'] != 'queued':
+                        self.respond(409, {'error': 'Jobbet er allerede godkendt eller afsluttet.'})
+                        return
+                    telemetry = connection.execute('SELECT * FROM telemetry WHERE id=1').fetchone()
+                    if not telemetry or time.time() - telemetry['seen'] > 45:
+                        self.respond(409, {'error': 'Pi er offline.'})
+                        return
+                    analysis = analyze(platform.root / (job_id + '.gcode.3mf'))
+                    try:
+                        selection = select(analysis, json.loads(telemetry['body']).get('printer', {}), payload)
+                    except ValueError as error:
+                        self.respond(409, {'error': str(error)})
+                        return
+                    changed = connection.execute("UPDATE jobs SET state='approved',selection=?,analysis=? WHERE id=? AND state='queued'", (json.dumps(selection), json.dumps(analysis), job_id)).rowcount
                 else:
                     changed = connection.execute("UPDATE jobs SET state='resolved' WHERE id=? AND state IN ('unknown','dispatched')", (job_id,)).rowcount
             self.respond(200 if changed else 409, {'saved': bool(changed)})
@@ -151,7 +174,7 @@ class Handler(BaseHTTPRequestHandler):
             with platform.db() as connection:
                 connection.execute('INSERT OR REPLACE INTO telemetry VALUES (1,?,?)', (json.dumps(report), time.time()))
                 active = connection.execute("SELECT 1 FROM jobs WHERE state IN ('dispatched','unknown')").fetchone()
-                job = None if active else connection.execute("SELECT * FROM jobs WHERE state='approved' ORDER BY created LIMIT 1").fetchone()
+                job = None if active or report.get('plan_version') != 1 else connection.execute("SELECT * FROM jobs WHERE state='approved' ORDER BY created LIMIT 1").fetchone()
                 if job:
                     connection.execute("UPDATE jobs SET state='dispatched' WHERE id=?", (job['id'],))
             self.respond(200, {'job': dict(job) if job else None})

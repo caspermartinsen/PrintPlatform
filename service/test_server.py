@@ -94,6 +94,9 @@ class ServiceTests(unittest.TestCase):
 
     def test_live_adapter_uses_fake_process_only(self):
         job_id = self.upload()
+        with self.store.db() as connection:
+            connection.execute('UPDATE jobs SET selection=? WHERE id=?',
+                               (json.dumps({'ams_id':0,'slot':3,'filament_id':1}),job_id))
         params = Path(self.directory.name) / 'template.json'
         params.write_text('{"ftp_file":"bunny.gcode.3mf", "ams_mapping":"[0]"}')
         environment = {'PRINT_MODE': 'live', 'BAMBU_REPO': self.directory.name,
@@ -101,6 +104,13 @@ class ServiceTests(unittest.TestCase):
                        'BAMBU_DEV_IP': '127.0.0.1', 'BAMBU_ACCESS_CODE': 'fake', 'BAMBU_CERT': '/fake'}
         with patch.dict(os.environ, environment), patch('server.subprocess.Popen') as launch:
             launch.return_value.__enter__.return_value.wait.return_value = 0
+            def capture(*args, **kwargs):
+                plan = json.loads((self.store.root / (job_id + '.params.json')).read_text())
+                self.assertEqual(json.loads(plan['ams_mapping']), [2])
+                self.assertEqual(json.loads(plan['ams_mapping2']), [{'ams_id':0,'slot_id':2}])
+                self.assertTrue(plan['task_use_ams'])
+                return launch.return_value
+            launch.side_effect = capture
             self.store.run(job_id)
             command = launch.call_args.args[0]
             self.assertIn('local_print', command)

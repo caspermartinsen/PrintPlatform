@@ -63,7 +63,7 @@ class Agent:
         status = request(self.local, '/v1/status', self.api_token)
         if status.get('mode') != 'simulate':
             raise ValueError('Agent refuses physical printing in this version')
-        job = self.remote('/agent/poll', {'mode': 'simulate', 'printer': status['printer']})['job']
+        job = self.remote('/agent/poll', {'mode': 'simulate', 'plan_version': 1, 'printer': status['printer']})['job']
         if job is None:
             return
         job_id = str(uuid.UUID(job['id']))
@@ -80,7 +80,7 @@ class Agent:
             if fresh['mode'] != 'simulate':
                 raise ValueError('Mode changed')
             request(self.local, '/v1/jobs/' + local_id + '/simulate', self.api_token,
-                    {'confirm_job_id': local_id, 'printer_ready': True})
+                    {'confirm_job_id': local_id, 'printer_ready': True, 'selection': json.loads(job['selection'])})
             for attempt in range(30):
                 local_jobs = request(self.local, '/v1/jobs', self.api_token)['jobs']
                 result = next(item for item in local_jobs if item['id'] == local_id)

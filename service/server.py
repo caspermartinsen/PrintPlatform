@@ -15,6 +15,7 @@ import uuid
 import zipfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telemetry import Telemetry
+from print_plan import analyze, select, mapping
 
 
 ACTIVE = ('starting', 'submitted', 'unknown')
@@ -57,6 +58,10 @@ class Store:
         with self.db() as connection:
             connection.execute('CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, name TEXT, sha256 TEXT, state TEXT, created REAL)')
             connection.execute("UPDATE jobs SET state='unknown' WHERE state='starting'")
+            columns = {row[1] for row in connection.execute('PRAGMA table_info(jobs)')}
+            for column in ('selection', 'plan'):
+                if column not in columns:
+                    connection.execute('ALTER TABLE jobs ADD COLUMN ' + column + ' TEXT')
         for temporary in self.root.glob('*.params.json'):
             temporary.unlink()
         for temporary in self.root.glob('*.part'):
@@ -82,14 +87,14 @@ class Store:
         with self.db() as connection:
             connection.execute('UPDATE jobs SET state=? WHERE id=?', (state, job_id))
 
-    def start(self, job_id):
+    def start(self, job_id, selection=None):
         with self.db() as connection:
             job = connection.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
             if not job or job['state'] != 'queued':
                 raise ValueError('Job is not queued; never retry an ambiguous start')
             if connection.execute("SELECT 1 FROM jobs WHERE state IN ('starting','submitted','unknown')").fetchone():
                 raise ValueError('Printer reserved; reconcile the active job first')
-            connection.execute("UPDATE jobs SET state='starting' WHERE id=?", (job_id,))
+            connection.execute("UPDATE jobs SET state='starting',selection=? WHERE id=?", (json.dumps(selection) if selection else None, job_id))
         threading.Thread(target=self.run, args=(job_id,), daemon=True).start()
 
     def run(self, job_id):
@@ -97,13 +102,18 @@ class Store:
         try:
             path = self.root / (job_id + '.gcode.3mf')
             with self.db() as connection:
-                expected = connection.execute('SELECT sha256 FROM jobs WHERE id=?', (job_id,)).fetchone()[0]
+                job = connection.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
+                expected = job['sha256']
             with path.open('rb') as source:
                 digest = hashlib.sha256()
                 for chunk in iter(lambda: source.read(65536), b''):
                     digest.update(chunk)
                 if digest.hexdigest() != expected:
                     raise ValueError('File changed')
+            selection = json.loads(job['selection']) if job['selection'] else None
+            plan = mapping(selection) if selection else {}
+            with self.db() as connection:
+                connection.execute('UPDATE jobs SET plan=? WHERE id=?', (json.dumps(plan), job_id))
             if os.environ.get('PRINT_MODE', 'simulate') == 'simulate':
                 state = 'simulated'
             else:
@@ -116,6 +126,7 @@ class Store:
                 params.update(filename=str(path), dev_id=os.environ['BAMBU_DEV_ID'],
                               dev_ip=os.environ['BAMBU_DEV_IP'], password=os.environ['BAMBU_ACCESS_CODE'],
                               ftp_file=path.name, plate_index=1, task_name=job_id, project_name=job_id)
+                params.update(plan)
                 params_path = self.root / (job_id + '.params.json')
                 params_path.write_text(json.dumps(params))
                 command = [str(repo / 'tools/plugin_runner.sh'), '--abi', '02.05.02',
@@ -226,7 +237,7 @@ class Handler(BaseHTTPRequestHandler):
                 finally:
                     os.close(directory_fd)
                 with store.db() as connection:
-                    connection.execute('INSERT INTO jobs VALUES (?,?,?,?,?)',
+                    connection.execute('INSERT INTO jobs (id,name,sha256,state,created) VALUES (?,?,?,?,?)',
                                        (job_id, name, digest.hexdigest(), 'queued', time.time()))
             finally:
                 temporary.unlink(missing_ok=True)
@@ -238,10 +249,18 @@ class Handler(BaseHTTPRequestHandler):
                 if action == 'simulate' and os.environ.get('PRINT_MODE', 'simulate') != 'simulate':
                     self.reply(409, {'error': 'Simulation endpoint refuses live mode'})
                     return
-                if payload != {'confirm_job_id': job_id, 'printer_ready': True}:
+                selection = None
+                if payload.get('selection') is not None:
+                    choice = payload['selection']
+                    current = self.server.telemetry.snapshot()
+                    selection = select(analyze(store.root / (job_id + '.gcode.3mf')), current,
+                                       {**choice, 'bed_clear': payload.get('printer_ready'), 'accept_differences': True})
+                    if any(selection.get(key) != choice.get(key) for key in ('material', 'name', 'color', 'filament_id')):
+                        raise ValueError('AMS contents changed after approval')
+                if payload.get('confirm_job_id') != job_id or payload.get('printer_ready') is not True:
                     raise ValueError('Explicit confirmation required')
                 try:
-                    store.start(job_id)
+                    store.start(job_id, selection)
                 except ValueError as error:
                     self.reply(409, {'error': str(error)})
                     return

@@ -57,6 +57,28 @@ Pi-API'et forbliver på loopback. `PRINT_MODE=simulate` skal bevares.
 
 ## Funktionelt forløb
 
+### Étfarveplan og AMS-valg
+
+Upload analyserer `Metadata/slice_info.config` for faktisk anvendte filamenter,
+ikke antallet af gemte profiler i projektet. Navn på profil hentes fra
+`project_settings.config`. En fil med flere anvendte filamenter, ukendt materiale
+eller manglende metadata kan gemmes, men kan ikke godkendes. Første version kræver,
+at det ene anvendte filament er filament 1; andre indeks skal om-slices.
+Metadata er oplysninger fra sliceren, ikke en analyse af alle G-code-bevægelser.
+
+Godkendelsesdialogen viser filnavn, filamentkrav og AMS-valg. Materialet skal være
+det samme (fx PLA); farve-/profilforskelle vises og kræver særskilt accept.
+Slicerens temperaturer ændres ikke. Tom byggeplade skal bekræftes, også i testen.
+Serveren kontrollerer de seneste AMS-oplysninger; Pi'en kontrollerer dem igen ved
+modtagelsen. Skiftet spole eller gamle data afviser udførelsen og kræver gennemgang.
+
+Godkendt valg gemmes i cloud og lokal database. I simuleringen beregner Pi'en de
+samme `ams_mapping`/`ams_mapping2`-parametre som driveradapteren bruger. Valgt
+AMS-plads vises i køen. Agentens plan-version forhindrer levering til ældre agenter.
+Opdatér både Pi og Dokploy. Ældre uploadede filer analyseres også uden gen-upload.
+Rigtig cloud-printstart er fortsat deaktiveret; næste fysiske test kræver særskilt
+godkendelse og aktivering. Ingen ændring i `PRINT_MODE` foretages af denne opdatering.
+
 AMS-kort viser pladser (nummereret fra 1), printerens RGBA-farve, filamentnavn,
 materiale og estimeret restprocent. Tomme pladser markeres kun som tomme, når
 printeren rapporterer det. Ukendte/gamle data vises uden farve og restmængde.
