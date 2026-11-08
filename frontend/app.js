@@ -11,7 +11,11 @@ async function api(path, options = {}) {
 async function approve(job) {
   element('approvalName').textContent = job.name;
   const dialog = element('approval');
-  dialog.querySelector('[value="cancel"]').formNoValidate = true;
+  const form = dialog.querySelector('form');
+  const cancel = dialog.querySelector('[value="cancel"]');
+  cancel.formNoValidate = true;
+  let submitting = false;
+  let profileMismatch = false;
   const oldControls = document.getElementById('print-choice');
   if (oldControls) oldControls.remove();
   const controls = document.createElement('div'); controls.id = 'print-choice';
@@ -21,11 +25,12 @@ async function approve(job) {
     const option = document.createElement('option'); option.value=value; option.textContent=text; option.disabled=value==='live' && !liveEnabled; mode.append(option);
   }
   const physical = document.createElement('input'); physical.type='text'; physical.id='physical-confirmation'; physical.autocomplete='off'; physical.pattern='START PRINT';
+  physical.oninput = () => physical.setCustomValidity(physical.value && physical.value !== 'START PRINT' ? 'Skriv hele teksten START PRINT med mellemrum.' : '');
   const physicalLabel = document.createElement('label'); physicalLabel.htmlFor=physical.id; physicalLabel.textContent='Skriv START PRINT for at godkende fysisk printstart';
   physical.hidden=true; physicalLabel.hidden=true;
   const submit = dialog.querySelector('[value="approve"]');
   mode.onchange = () => {
-    const live = mode.value==='live'; physical.required=live; physical.hidden=!live; physicalLabel.hidden=!live; physical.value='';
+    const live = mode.value==='live'; physical.required=live; physical.hidden=!live; physicalLabel.hidden=!live; physical.value=''; physical.setCustomValidity('');
     submit.textContent=live?'Start fysisk print':'Godkend simulering';
     dialog.querySelector('h2').textContent=live?'Bekræft fysisk printstart':'Godkend simulering';
     dialog.querySelector('form > p:last-of-type').textContent=live?'Printeren kan begynde klargøring og print straks efter godkendelsen.':'Pi’en tester forløbet uden fysisk printstart.';
@@ -52,25 +57,41 @@ async function approve(job) {
     const slot = latestPrinter?.ams_slots.find(item => item.ams_id === selected?.ams_id && item.slot === selected?.slot);
     const warnings = [];
     if (slot && filament.color?.replace('#','').toUpperCase().slice(0,6) !== slot.color?.toUpperCase().slice(0,6)) warnings.push('Farven afviger fra filen.');
-    if (slot && (!slot.name || !filament.profile.toUpperCase().includes(slot.name.toUpperCase()))) warnings.push('Filamentprofilen afviger eller er ukendt. Slicerens temperaturer ændres ikke.');
+    profileMismatch = Boolean(slot && (!slot.name || !filament.profile.toUpperCase().includes(slot.name.toUpperCase())));
+    if (profileMismatch) warnings.push(`Profilkonflikt: filen bruger ${filament.profile || 'ukendt profil'}, men pladsen melder ${slot.name || 'ukendt filament'}. Fysisk print kræver en matchende profil.`);
     warning.textContent = warnings.join(' ') || 'Materiale, profil og farve matcher de tilgængelige oplysninger.';
     differences.required = warnings.length > 0; differencesLabel.hidden = !warnings.length;
+    submit.disabled = mode.value === 'live' && profileMismatch;
   };
+  const modeChanged = mode.onchange;
+  mode.onchange = () => { modeChanged(); choice.onchange(); };
   const bed = document.createElement('input'); bed.type = 'checkbox'; bed.required = true;
   const bedLabel = document.createElement('label'); bedLabel.className = 'check-label'; bedLabel.append(bed, document.createTextNode('Jeg har kontrolleret, at byggepladen er tom.'));
   const hint = document.createElement('p'); hint.textContent = 'Kun samme materialetype kan vælges. Tomme eller ukendte pladser vises ikke. Kontrollér den valgte plads før godkendelse.';
   differencesLabel.hidden = true;
-  controls.append(modeLabel,mode,requirement, label, choice, hint, warning, differencesLabel, bedLabel,physicalLabel,physical);
+  const errorMessage = document.createElement('div'); errorMessage.id = 'approval-error'; errorMessage.className = 'plan-warning'; errorMessage.setAttribute('role','alert'); errorMessage.tabIndex=-1;
+  controls.append(modeLabel,mode,requirement, label, choice, hint, warning, differencesLabel, bedLabel,physicalLabel,physical,errorMessage);
   element('approvalName').after(controls);
   dialog.returnValue = 'cancel';
   dialog.showModal();
-  dialog.addEventListener('close', async () => {
-    if (dialog.returnValue !== 'approve') return;
+  dialog.oncancel = event => { if (submitting) event.preventDefault(); };
+  form.onsubmit = async event => {
+    event.preventDefault();
+    if (submitting) return;
+    if (event.submitter?.value === 'cancel') { dialog.close('cancel'); return; }
+    if (!form.reportValidity()) return;
+    submitting=true; submit.disabled=true; cancel.disabled=true; errorMessage.textContent='Godkendelsen sendes…';
     try {
       await api(`/api/jobs/${job.id}/approve`, {method:'POST', headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm_job_id:job.id,...JSON.parse(choice.value),bed_clear:bed.checked,accept_differences:differences.checked,execution_mode:mode.value,confirm_physical:physical.value})});
+      dialog.close('approve');
       await refresh();
-    } catch (error) { element('message').textContent = error.message; }
-  }, {once:true});
+    } catch (error) {
+      errorMessage.textContent = error.message;
+      errorMessage.focus();
+    } finally {
+      submitting=false; submit.disabled=mode.value==='live' && profileMismatch; cancel.disabled=false;
+    }
+  };
 }
 function renderAMS(printer, online) {
   const slots = Array.isArray(printer?.ams_slots) ? printer.ams_slots : [];

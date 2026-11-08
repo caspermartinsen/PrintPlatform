@@ -184,9 +184,14 @@ Ingen slicing, preview eller fjernannullering endnu.
 ## Tests
 
 ```sh
+node --test frontend/app.test.cjs
 python3 -m unittest cloud.test_platform -v
 cd service && python3 -m unittest -v
 ```
+
+Godkendelsesdialogen bliver åben ved serverafvisning og viser fejlen ved valgene.
+Dialogen lukker først efter serverens kvittering. Dobbeltklik under afsendelse
+sender ikke endnu en godkendelse. Fysisk bekræftelse kræver præcis `START PRINT`.
 
 Integrationstestene bruger midlertidige lokale servere og erstatter printprocesser.
 De tester godkendelse, overførsel, simulering, mistet kvittering, genstart og login.

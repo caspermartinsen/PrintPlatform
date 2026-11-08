@@ -100,4 +100,6 @@ def live_ready(analysis, printer, selection):
     if not printer_available(printer):
         raise ValueError('Printeren skal være klar uden fejl. Kontrollér printerens skærm.')
     if any('profil' in warning.lower() for warning in selection.get('warnings', [])):
-        raise ValueError('Live-print kræver en filamentprofil, der matcher AMS-spolen.')
+        profile = analysis.get('filaments',[{}])[0].get('profile') or 'ukendt profil'
+        name = selection.get('name') or 'ukendt filament'
+        raise ValueError(f'Profilkonflikt: filen bruger {profile}; AMS {selection.get("ams_id",0)+1}, plads {selection.get("slot","?")} melder {name}. Vælg en matchende plads eller slice filen med den valgte spoles profil.')
