@@ -10,7 +10,7 @@ id print-service >/dev/null 2>&1 || useradd --system --home-dir /var/lib/print-s
 install -d -m 755 /opt/print-platform/service
 install -d -m 755 /opt/print-platform/deploy
 install -m 644 "$project_dir/deploy/updater.py" /opt/print-platform/deploy/updater.py
-install -d -m 700 /etc/print-service
+install -d -m 750 -o root -g print-service /etc/print-service
 install -d -m 700 -o print-service -g print-service /var/lib/print-service
 if [ ! -e /var/lib/print-service/update.lock ]; then
     install -m 600 -o print-service -g print-service /dev/null /var/lib/print-service/update.lock

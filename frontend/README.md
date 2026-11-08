@@ -41,6 +41,10 @@ Driveren skal være installeret i `/opt/open-bamboo-persano`, kompileret til ABI
 konfigurerede sti. Den eksisterende home-installation bevares. Forberedelse og
 kompilering starter ingen print. Hold live-indstillingerne deaktiveret indtil test.
 
+`/etc/print-service` skal være root:print-service med 0750, så servicebrugeren
+kan læse `print.params.json` (root:print-service, 0640). Miljøfiler med hemmeligheder
+forbliver root:root, 0600 og indlæses af systemd; servicebrugeren kan ikke læse dem.
+
 ## Automatiske Pi-opdateringer
 
 Efter engangsinstallation kan `sudo systemctl enable --now print-updater.timer`
