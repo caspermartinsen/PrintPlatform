@@ -60,7 +60,7 @@ class Agent:
             try:
                 fcntl.flock(guard, fcntl.LOCK_SH | fcntl.LOCK_NB)
             except BlockingIOError:
-                return
+                return False
             return self.work()
 
     def work(self):
@@ -116,10 +116,10 @@ def main():
     connected = False
     while True:
         try:
-            agent.tick()
-            if not connected:
-                print('Platform connected; status delivered', flush=True)
-            connected = True
+            if agent.tick() is not False:
+                if not connected:
+                    print('Platform connected; status delivered', flush=True)
+                connected = True
         except Exception as error:
             connected = False
             detail = 'HTTP ' + str(error.code) if isinstance(error, urllib.error.HTTPError) else type(error).__name__

@@ -1,4 +1,5 @@
 import fcntl
+from contextlib import closing
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -17,8 +18,9 @@ class UpdaterTests(unittest.TestCase):
         self.updater.data.mkdir()
         for name in FILES:
             (self.updater.service / name).write_bytes(b'old = 1\n')
-        with sqlite3.connect(self.updater.data / 'jobs.sqlite') as connection:
+        with closing(sqlite3.connect(self.updater.data / 'jobs.sqlite')) as connection:
             connection.execute('CREATE TABLE jobs (id TEXT)')
+            connection.commit()
         self.files = {name:b'new = 2\n' for name in FILES}
         self.updater.active = lambda unit: True
         self.commands = []
@@ -63,6 +65,6 @@ class UpdaterTests(unittest.TestCase):
         with patch('deploy.updater.time.sleep'), self.assertRaises(RuntimeError):
             self.updater.apply('a'*40,self.files)
         self.assertEqual((self.updater.service / 'server.py').read_bytes(),b'old = 1\n')
-        with sqlite3.connect(self.updater.data / 'jobs.sqlite') as connection:
+        with closing(sqlite3.connect(self.updater.data / 'jobs.sqlite')) as connection:
             self.assertEqual(connection.execute('SELECT COUNT(*) FROM jobs').fetchone()[0],0)
         self.assertIn('rolled_back',(self.updater.root / 'version.json').read_text())

@@ -1,4 +1,5 @@
 import fcntl
+from contextlib import closing
 import io
 import json
 import os
@@ -105,7 +106,7 @@ class Updater:
                     self.systemctl('stop', 'print-service')
                     stopped = True
                     database = self.data / 'jobs.sqlite'
-                    with sqlite3.connect(database) as source, sqlite3.connect(self.root / 'previous.sqlite') as target:
+                    with closing(sqlite3.connect(database)) as source, closing(sqlite3.connect(self.root / 'previous.sqlite')) as target:
                         source.backup(target)
                     try:
                         for name, content in files.items():

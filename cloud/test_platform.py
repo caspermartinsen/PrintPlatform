@@ -1,4 +1,5 @@
 import base64
+import fcntl
 import io
 import json
 from pathlib import Path
@@ -17,6 +18,13 @@ from telemetry import Telemetry
 
 
 class PlatformTests(unittest.TestCase):
+    def test_agent_defers_poll_during_update(self):
+        self.agent.update_guard = self.local.store.root / 'update.lock'
+        with self.agent.update_guard.open('a') as guard:
+            fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with patch.object(self.agent, 'work') as work:
+                self.assertFalse(self.agent.tick())
+                work.assert_not_called()
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         root = Path(self.directory.name)
