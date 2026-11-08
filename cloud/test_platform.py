@@ -266,6 +266,7 @@ class PlatformTests(unittest.TestCase):
         self.agent.tick()
         self.assertEqual(self.browser('/api/status')['jobs'][0]['state'], 'unknown')
         self.assertEqual(self.local.store.jobs(), [])
-        self.browser('/api/jobs/' + job_id + '/resolve', json.dumps({'confirm_job_id': job_id}).encode())
+        self.browser('/api/jobs/' + job_id + '/resolve', json.dumps({'confirm_job_id': job_id,'printer_checked_idle':True}).encode())
         self.assertEqual(self.browser('/api/status')['jobs'][0]['state'], 'resolved')
         self.assertTrue(self.agent.remote('/agent/result', {'id':job_id, 'state':'unknown'})['saved'])
+

@@ -100,7 +100,7 @@ class Agent:
             data = self.remote('/agent/files/' + job_id, raw=True)
             if hashlib.sha256(data).hexdigest() != job['sha256']:
                 raise ValueError('Checksum mismatch')
-            uploaded = request(self.local, '/v1/jobs', self.api_token, data, extra={'X-Filename': job['name']})
+            uploaded = request(self.local, '/v1/jobs', self.api_token, data, extra={'X-Filename': job_id + '.gcode.3mf'})
             local_id = uploaded['id']
             fresh = request(self.local, '/v1/status', self.api_token)
             if execution_mode == 'live' and not fresh.get('remote_live_enabled'):
@@ -157,3 +157,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

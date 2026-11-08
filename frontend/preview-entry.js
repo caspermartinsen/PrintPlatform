@@ -18,6 +18,7 @@ export async function mount(container, url, kind, signal) {
   scene.add(new THREE.HemisphereLight('#ffffff','#67728a',3));
   const light = new THREE.DirectionalLight('#ffffff',3); light.position.set(100,-100,300); scene.add(light);
   let object;
+  const layerEnds=[];
   const draw = () => renderer.render(scene,camera);
   function removeObject() {
     if (!object) return;
@@ -25,13 +26,7 @@ export async function mount(container, url, kind, signal) {
   }
   function setLayer(index) {
     if (kind !== 'sliced') return;
-    removeObject();
-    const positions=[];
-    for (const layer of data.layers.slice(0,index+1)) {
-      for (const segment of layer.segments) positions.push(segment[0],segment[1],layer.z,segment[2],segment[3],layer.z);
-    }
-    const geometry=new THREE.BufferGeometry(); geometry.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));
-    object=new THREE.LineSegments(geometry,new THREE.LineBasicMaterial({color:'#5363cf'})); scene.add(object); draw();
+    object.geometry.setDrawRange(0,layerEnds[index] || 0); draw();
   }
   if (kind === 'model') {
     const geometry=new STLLoader().parse(data); geometry.computeVertexNormals(); geometry.computeBoundingBox();
@@ -42,6 +37,13 @@ export async function mount(container, url, kind, signal) {
     const size=geometry.boundingBox.getSize(new THREE.Vector3()); const distance=Math.max(size.x,size.y,size.z,20)*2;
     camera.position.set(128+distance,128-distance,size.z/2+distance);
   } else {
+    const positions=[];
+    for(const layer of data.layers) {
+      for(const segment of layer.segments) positions.push(segment[0],segment[1],layer.z,segment[2],segment[3],layer.z);
+      layerEnds.push(positions.length/3);
+    }
+    const geometry=new THREE.BufferGeometry();geometry.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));
+    object=new THREE.LineSegments(geometry,new THREE.LineBasicMaterial({color:'#5363cf'}));scene.add(object);
     setLayer(data.layers.length-1);
     object.geometry.computeBoundingBox();
     const box=object.geometry.boundingBox;
@@ -54,3 +56,4 @@ export async function mount(container, url, kind, signal) {
   }); resize.observe(container); controls.update(); draw();
   return {data,setLayer,dispose(){resize.disconnect(); controls.dispose(); removeObject(); grid.geometry.dispose(); grid.material.dispose(); renderer.dispose(); renderer.domElement.remove();}};
 }
+
