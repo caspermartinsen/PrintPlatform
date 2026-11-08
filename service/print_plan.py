@@ -35,13 +35,7 @@ def analyze(path):
                 name = names[filament_id - 1] if isinstance(names, list) and len(names) >= filament_id else ''
                 result['filaments'].append({'id': filament_id, 'material': filament.get('type', '')[:40],
                     'color': filament.get('color', '')[:9], 'profile': str(name)[:120]})
-            if len(result['filaments']) != 1:
-                result['reason'] = 'Kun print med ét anvendt filament understøttes.'
-                return result
-            if not result['filaments'][0]['material']:
-                return result
-            if result['filaments'][0]['id'] != 1:
-                result['reason'] = 'Slice étfarveprintet med filament 1 som det anvendte filament.'
+            if not result['filaments'] or len({f['id'] for f in result['filaments']}) != len(result['filaments']) or any(not f['material'] for f in result['filaments']):
                 return result
             result.update(supported=True, reason=None)
     except (KeyError, ValueError, TypeError, ET.ParseError, zipfile.BadZipFile):
@@ -52,6 +46,16 @@ def analyze(path):
 def select(analysis, printer, payload):
     if not analysis.get('supported') or payload.get('bed_clear') is not True:
         raise ValueError('Filanalyse og bekræftelse af tom byggeplade kræves.')
+    if len(analysis['filaments']) > 1:
+        choices = payload.get('filaments')
+        if not isinstance(choices,list) or len(choices) != len(analysis['filaments']):
+            raise ValueError('Vælg en AMS-plads for hvert filament.')
+        selected = []
+        for filament, choice in zip(analysis['filaments'], choices):
+            if not isinstance(choice,dict) or choice.get('filament_id') != filament['id']:
+                raise ValueError('Filamentrækkefølgen matcher ikke filen.')
+            selected.append(select({**analysis,'filaments':[filament]},printer,{**payload,**choice}))
+        return {**selected[0], 'filaments':selected, 'warnings':[w for item in selected for w in item['warnings']]}
     unit_id, slot_id = payload.get('ams_id'), payload.get('slot')
     if type(unit_id) is not int or type(slot_id) is not int or not 0 <= unit_id < 16 or not 1 <= slot_id <= 4:
         raise ValueError('Vælg en AMS-plads.')
@@ -75,6 +79,15 @@ def select(analysis, printer, payload):
 
 
 def mapping(selection):
+    if selection.get('filaments'):
+        choices = selection['filaments']
+        flat = [-1] * max(item['filament_id'] for item in choices)
+        expanded = [{'ams_id':255,'slot_id':255} for _ in flat]
+        for item in choices:
+            index = item['filament_id']-1
+            flat[index] = item['ams_id']*4+item['slot']-1
+            expanded[index] = {'ams_id':item['ams_id'],'slot_id':item['slot']-1}
+        return {'task_use_ams':True,'ams_mapping':json.dumps(flat),'ams_mapping2':json.dumps(expanded)}
     index = selection['filament_id'] - 1
     flat = [-1] * (index + 1)
     flat[index] = selection['ams_id'] * 4 + selection['slot'] - 1
@@ -99,6 +112,10 @@ def live_ready(analysis, printer, selection):
         raise ValueError('Live-print kræver en fil slicet til Bambu Lab P2S.')
     if not printer_available(printer):
         raise ValueError('Printeren skal være klar uden fejl. Kontrollér printerens skærm.')
+    if selection.get('filaments'):
+        for item in selection['filaments']:
+            live_ready(analysis,printer,item)
+        return
     if any('profil' in warning.lower() for warning in selection.get('warnings', [])):
         profile = analysis.get('filaments',[{}])[0].get('profile') or 'ukendt profil'
         name = selection.get('name') or 'ukendt filament'

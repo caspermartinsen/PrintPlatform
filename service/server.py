@@ -345,7 +345,7 @@ class Handler(BaseHTTPRequestHandler):
                     current = self.server.telemetry.snapshot()
                     selection = select(analyze(store.root / (job_id + '.gcode.3mf')), current,
                                        {**choice, 'bed_clear': payload.get('printer_ready'), 'accept_differences': True})
-                    if any(selection.get(key) != choice.get(key) for key in ('material', 'name', 'color', 'filament_id')):
+                    if any(selection.get(key) != choice.get(key) for key in ('material', 'name', 'color', 'filament_id', 'filaments')):
                         raise ValueError('AMS contents changed after approval')
                     if execution_mode == 'live':
                         live_ready(analyze(store.root / (job_id + '.gcode.3mf')), current, selection)

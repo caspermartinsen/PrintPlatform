@@ -1,6 +1,14 @@
-# STL-slicing i Dokploy
+# Direkte flerfarvet 3MF
 
-Første version: én STL-model, én plade og ét PLA-filament på **Bambu Lab P2S med
+Upload et uslicet `.3mf`-projekt (maks. 50 MiB) fra Bambu Studio eller OrcaSlicer med én plade. Projektets geometri og farvetildelinger sendes samlet til sliceren. Vælg en AMS-plads for hver projektfarve; hver plads skal indeholde PLA Basic, PLA Matte eller PLA Translucent. Printer, proces og filamentprofiler erstattes med platformens P2S-profiler. Upload og slicing starter ikke print.
+
+Kontrollér printbanerne efter slicing og vælg AMS-plads for hvert anvendt filament ved godkendelsen. Alle pladser kontrolleres igen på Pi'en. Webapp, slicer og Pi-service skal opdateres sammen for flerfarvet print. Generiske 3MF-filer uden projektets filamentmetadata kan indlæses som én farve; vilkårlige teksturer og farveudvidelser understøttes ikke som printfarver. Projekter med flere plader skal først gemmes som et projekt med én plade.
+
+CLI-brugen følger [Bambu Studios dokumentation](https://github.com/bambulab/BambuStudio/wiki/Command-Line-Usage): `--load-filaments` angiver en betroet profil for hver projektfarve.
+
+# STL- og 3MF-slicing i Dokploy
+
+STL slices med ét PLA-filament; 3MF-projekter kan bruge flere filamenter på én plade. Slicing bruger **Bambu Lab P2S med
 0,4 mm dyse og Textured PEI Plate**. STL tolkes i millimeter. Modellen centreres
 og arrangeres på pladen; orienteringen mod byggepladen (Z) ændres ikke automatisk,
 men slicerens arrangement kan rotere i pladens plan. Automatisk støtte er slået fra.

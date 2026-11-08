@@ -16,7 +16,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from cloud.model_files import stl_info
+from cloud.model_files import stl_info, three_mf_info
 from slicer.profiles import FILAMENTS
 
 
@@ -56,18 +56,30 @@ def run_slice(data, options, destination, profiles, binary):
     if options.get('profile') not in FILAMENTS or options.get('layer_height') not in (0.12,0.2,0.28) or options.get('infill') not in (10,15,20,40,100) or not re.fullmatch(r'#[0-9A-Fa-f]{6}',str(options.get('color',''))):
         raise ValueError('Invalid trusted slicing options')
     destination.mkdir(parents=True,exist_ok=True)
-    model = destination / 'model.stl'
-    normalize_model(data, model)
+    is_project = data[:2] == b'PK'
+    model = destination / ('model.3mf' if is_project else 'model.stl')
+    if is_project:
+        info = three_mf_info(data)
+        if len(info['filaments']) != len(options.get('filaments',[options])):
+            raise ValueError('Filament count mismatch')
+        model.write_bytes(data)
+    else:
+        normalize_model(data, model)
     process = json.loads((profiles / 'process.json').read_text())
     process.update(layer_height=str(options['layer_height']),sparse_infill_density=str(options['infill'])+'%',enable_arc_fitting='0',enable_support='0')
     process_path = destination / 'process.json'
     process_path.write_text(json.dumps(process))
-    filament = json.loads((profiles / (options['profile'] + '.json')).read_text())
-    filament['filament_colour'] = [options['color']]
-    filament_path = destination / 'filament.json'
-    filament_path.write_text(json.dumps(filament))
+    filament_paths = []
+    for index, item in enumerate(options.get('filaments',[options])):
+        if item.get('profile') not in FILAMENTS or not re.fullmatch(r'#[0-9A-Fa-f]{6}',str(item.get('color',''))):
+            raise ValueError('Invalid filament options')
+        filament = json.loads((profiles / (item['profile'] + '.json')).read_text())
+        filament['filament_colour'] = [item['color']]
+        filament_path = destination / f'filament-{index}.json'
+        filament_path.write_text(json.dumps(filament))
+        filament_paths.append(str(filament_path))
     command = [str(binary),'--datadir',str(destination / 'config'),'--load-settings',
-        str(profiles / 'machine.json')+';'+str(process_path),'--load-filaments',str(filament_path),
+        str(profiles / 'machine.json')+';'+str(process_path),'--load-filaments',';'.join(filament_paths),
         '--curr-bed-type','Textured PEI Plate','--arrange','1','--ensure-on-bed','--slice','1','--export-3mf','result.gcode.3mf',
         '--outputdir',str(destination),str(model)]
     environment = {'PATH':os.environ.get('PATH','/usr/bin:/bin'), 'HOME':str(destination),

@@ -52,31 +52,38 @@ async function approve(job) {
   mode.onchange();
   const filament = job.analysis.filaments[0];
   const requirement = document.createElement('p');
-  requirement.textContent = `Filen bruger 1 filament: ${filament.material} · ${filament.profile || 'Ukendt profil'} · ${filament.color || 'Ukendt farve'}`;
-  const label = document.createElement('label'); label.textContent = 'Vælg AMS-plads'; label.htmlFor = 'ams-choice';
-  const choice = document.createElement('select'); choice.id = 'ams-choice'; choice.required = true;
-  const placeholder = document.createElement('option'); placeholder.value = ''; placeholder.textContent = 'Vælg filament…'; choice.append(placeholder);
-  for (const slot of latestPrinter?.ams_slots || []) {
-    if (slot.stale || slot.present !== true || slot.material?.toUpperCase() !== filament.material.toUpperCase()) continue;
-    const option = document.createElement('option'); option.value = JSON.stringify({ams_id:slot.ams_id,slot:slot.slot});
-    option.textContent = `AMS ${slot.ams_id + 1} · Plads ${slot.slot}: ${slot.name || slot.material} · #${slot.color || '?'} · ${slot.remaining_percent ?? '?'} %`;
-    choice.append(option);
-  }
+  requirement.textContent = `Filen bruger ${job.analysis.filaments.length} filament(er). Vælg plads for hver farve.`;
+  const label = document.createElement('div');
+  const choices = job.analysis.filaments.map((filament,index)=>{
+    const caption=document.createElement('label');caption.textContent=`Filament ${filament.id}: ${filament.material} · ${filament.profile} · ${filament.color}`;
+    const select=document.createElement('select');select.id=index===0?'ams-choice':`ams-choice-${index}`;select.required=true;caption.htmlFor=select.id;
+    const placeholder=document.createElement('option');placeholder.value='';placeholder.textContent='Vælg filament…';select.append(placeholder);
+    for(const slot of latestPrinter?.ams_slots || []) {
+      if(slot.stale || slot.present!==true || slot.material?.toUpperCase()!==filament.material.toUpperCase())continue;
+      const option=document.createElement('option');option.value=JSON.stringify({ams_id:slot.ams_id,slot:slot.slot});option.textContent=`AMS ${slot.ams_id+1} · Plads ${slot.slot}: ${slot.name || slot.material} · #${slot.color || '?'}`;select.append(option);
+    }
+    label.append(caption,select);return select;
+  });
+  const choice=choices[0];
   const warning = document.createElement('p'); warning.className = 'plan-warning';
   const differences = document.createElement('input'); differences.type = 'checkbox'; differences.id = 'accept-differences';
   const differencesLabel = document.createElement('label'); differencesLabel.className = 'check-label'; differencesLabel.append(differences, document.createTextNode('Jeg accepterer de viste forskelle i farve eller profil.'));
   choice.onchange = () => {
     differences.checked = false;
-    const selected = choice.value ? JSON.parse(choice.value) : null;
-    const slot = latestPrinter?.ams_slots.find(item => item.ams_id === selected?.ams_id && item.slot === selected?.slot);
     const warnings = [];
-    if (slot && filament.color?.replace('#','').toUpperCase().slice(0,6) !== slot.color?.toUpperCase().slice(0,6)) warnings.push('Farven afviger fra filen.');
-    profileMismatch = Boolean(slot && (!slot.name || !filament.profile.toUpperCase().includes(slot.name.toUpperCase())));
-    if (profileMismatch) warnings.push(`Profilkonflikt: filen bruger ${filament.profile || 'ukendt profil'}, men pladsen melder ${slot.name || 'ukendt filament'}. Fysisk print kræver en matchende profil.`);
+    profileMismatch=false;
+    choices.forEach((choice,index)=>{
+      const filament=job.analysis.filaments[index];
+      const selected=choice.value?JSON.parse(choice.value):null;
+      const slot=latestPrinter?.ams_slots.find(item=>item.ams_id===selected?.ams_id && item.slot===selected?.slot);
+      if(slot && filament.color?.replace('#','').toUpperCase().slice(0,6)!==slot.color?.toUpperCase().slice(0,6))warnings.push(`Filament ${filament.id}: Farven afviger fra filen.`);
+      if(slot && (!slot.name || !filament.profile.toUpperCase().includes(slot.name.toUpperCase()))) {profileMismatch=true;warnings.push(`Profilkonflikt for filament ${filament.id}: ${filament.profile}. Vælg en matchende profil til fysisk print.`);}
+    });
     warning.textContent = warnings.join(' ') || 'Materiale, profil og farve matcher de tilgængelige oplysninger.';
     differences.required = warnings.length > 0; differencesLabel.hidden = !warnings.length;
     submit.disabled = mode.value === 'live' && profileMismatch;
   };
+  for(const select of choices)select.onchange=choice.onchange;
   const modeChanged = mode.onchange;
   mode.onchange = () => { modeChanged(); choice.onchange(); };
   const bed = document.createElement('input'); bed.type = 'checkbox'; bed.required = true;
@@ -87,7 +94,7 @@ async function approve(job) {
   const hint = document.createElement('p'); hint.textContent = 'Kun samme materialetype kan vælges. Tomme eller ukendte pladser vises ikke. Kontrollér den valgte plads før godkendelse.';
   differencesLabel.hidden = true;
   const errorMessage = document.createElement('div'); errorMessage.id = 'approval-error'; errorMessage.className = 'plan-warning'; errorMessage.setAttribute('role','alert'); errorMessage.tabIndex=-1;
-  controls.append(modeLabel,mode,requirement, label, choice, hint, warning, differencesLabel, previewLabel,bedLabel,physicalLabel,physical,errorMessage);
+  controls.append(modeLabel,mode,requirement, label, hint, warning, differencesLabel, previewLabel,bedLabel,physicalLabel,physical,errorMessage);
   element('approvalName').after(controls);
   dialog.returnValue = 'cancel';
   dialog.showModal();
@@ -99,7 +106,7 @@ async function approve(job) {
     if (!form.reportValidity()) return;
     submitting=true; submit.disabled=true; cancel.disabled=true; errorMessage.textContent='Godkendelsen sendes…';
     try {
-      await api(`/api/jobs/${job.id}/approve`, {method:'POST', headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm_job_id:job.id,...JSON.parse(choice.value),bed_clear:bed.checked,preview_checked:previewChecked.checked,accept_differences:differences.checked,execution_mode:mode.value,confirm_physical:physical.value})});
+      await api(`/api/jobs/${job.id}/approve`, {method:'POST', headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm_job_id:job.id,...JSON.parse(choice.value),...(choices.length>1?{filaments:choices.map((choice,index)=>({...JSON.parse(choice.value),filament_id:job.analysis.filaments[index].id}))}:{}),bed_clear:bed.checked,preview_checked:previewChecked.checked,accept_differences:differences.checked,execution_mode:mode.value,confirm_physical:physical.value})});
       dialog.close('approve');
       await refresh();
     } catch (error) {
@@ -166,7 +173,7 @@ async function refresh() {
         const size=document.createElement('small'); size.textContent=`Model: ${job.model_info.dimensions_mm.join(' × ')} mm`; details.append(size);
       }
       const analysis = document.createElement('small');
-      analysis.textContent = job.analysis?.supported ? `1 anvendt filament · ${job.analysis.filaments[0].material} · ${job.analysis.filaments[0].profile || 'Ukendt profil'}` : job.analysis?.reason || 'Filanalyse ukendt';
+      analysis.textContent = job.analysis?.supported ? `${job.analysis.filaments.length} anvendte filament(er) · ${job.analysis.filaments.map(filament=>`${filament.material} · ${filament.profile || 'Ukendt profil'}`).join(' / ')}` : job.analysis?.reason || 'Filanalyse ukendt';
       details.append(analysis);
       if (job.selection) { const selection = document.createElement('small'); selection.textContent = `Valgt: AMS ${job.selection.ams_id + 1}, plads ${job.selection.slot} · ${job.selection.name || job.selection.material}`; details.append(selection); }
       if (job.execution_mode) { const mode = document.createElement('small'); mode.textContent=job.execution_mode==='live'?'Handling: fysisk print':'Handling: simulering'; details.append(mode); }
@@ -206,8 +213,8 @@ async function refresh() {
 }
 element('upload').addEventListener('submit', async event => {
   event.preventDefault(); const file = element('file').files[0];
-  const isModel=file?.name.toLowerCase().endsWith('.stl');
-  if (!file || (!isModel && !file.name.toLowerCase().endsWith('.gcode.3mf')) || file.size > (isModel?50:100) * 1024 ** 2) { element('message').textContent = 'Vælg STL (maks. 50 MiB) eller .gcode.3mf (maks. 100 MiB).'; return; }
+  const isModel=file && !file.name.toLowerCase().endsWith('.gcode.3mf') && /\.(stl|3mf)$/i.test(file.name);
+  if (!file || (!isModel && !file.name.toLowerCase().endsWith('.gcode.3mf')) || file.size > (isModel?50:100) * 1024 ** 2) { element('message').textContent = 'Vælg STL / 3MF-model (maks. 50 MiB) eller .gcode.3mf (maks. 100 MiB).'; return; }
   element('uploadButton').disabled = true; element('message').textContent = 'Uploader…';
   try {
     const uploaded=await api('/api/jobs', {method:'POST', headers:{'X-Filename':file.name},body:file});
@@ -226,7 +233,7 @@ async function showGeometry(job,kind) {
   element('layer-controls').hidden=true;
   try {
     const module=await import('/preview.js');
-    const widget=await module.mount(element('model-preview'),`/api/jobs/${job.id}/${kind==='model'?'model':'preview'}`,kind,controller.signal);
+    const widget=await module.mount(element('model-preview'),`/api/jobs/${job.id}/${kind==='model'?'model':'preview'}`,kind,controller.signal,job.model_info?.format);
     if (requestId!==previewRequest) {widget.dispose();return;}
     previewWidget=widget;
     if (kind==='sliced') {
@@ -251,6 +258,20 @@ async function openModel(jobId) {
   }
   if(!slots.children.length){const option=document.createElement('option');option.value='';option.textContent='Afventer frisk AMS-status';slots.append(option);}
   if(job.slice_options){element('slice-layer').value=job.slice_options.layer_height;element('slice-infill').value=job.slice_options.infill;slots.value=JSON.stringify({ams_id:job.slice_options.ams_id,slot:job.slice_options.slot});}
+  element('project-filaments')?.remove();
+  if (job.model_info.filaments) {
+    const group=document.createElement('div');group.id='project-filaments';
+    job.model_info.filaments.forEach((filament,index)=>{
+      const label=document.createElement('label');label.textContent=`Projektfarve ${filament.id} · ${filament.color}`;
+      const select=slots.cloneNode(true);select.id=`project-filament-${index}`;
+      const saved=job.slice_options?.filaments?.[index];
+      if(saved)select.value=JSON.stringify({ams_id:saved.ams_id,slot:saved.slot});
+      label.htmlFor=select.id;group.append(label,select);
+    });
+    slots.after(group);
+  }
+  slots.hidden=Boolean(job.model_info.filaments);
+  document.querySelector('label[for="slice-slot"]').hidden=slots.hidden;
   previewKey=job.preview_ready?job.sha256:'model';
   await showGeometry(job,job.preview_ready?'sliced':'model');
   element('model-workspace').scrollIntoView({behavior:'smooth',block:'start'});
@@ -265,21 +286,21 @@ function refreshModels(data) {
   if(element('show-sliced')) element('show-sliced').disabled=!job.preview_ready;
   element('slice-message').textContent=job.state==='slicing'?'Slicer modellen…':job.state==='slice_queued'?'Venter på slicer…':job.state==='slice_failed'?`Slicing fejlede (${job.slice_error}). Kontrollér modellen og prøv igen.`:job.preview_ready?'Slicing klar. Kontrollér lagene og godkend derefter jobbet i køen.':'';
   element('download-sliced').hidden=!job.preview_ready;
-  element('download-sliced').href=`/api/jobs/${job.id}/sliced-file`;element('download-sliced').download=job.name.replace(/\.stl$/i,'.gcode.3mf');
+  element('download-sliced').href=`/api/jobs/${job.id}/sliced-file`;element('download-sliced').download=job.name.replace(/\.(stl|3mf)$/i,'.gcode.3mf');
   const key=job.preview_ready?job.sha256:'model';
   if(key!==previewKey){previewKey=key;showGeometry(job,job.preview_ready?'sliced':'model');}
 }
 
 if(element('slice-form')) {
   element('file').accept='.stl,.3mf';
-  element('upload').previousElementSibling.textContent='Upload STL til modelpreview og slicing, eller en færdig .gcode.3mf til køen. Upload starter aldrig print.';
+  element('upload').previousElementSibling.textContent='Upload STL eller flerfarvet 3MF til modelpreview og slicing, eller en færdig .gcode.3mf til køen. Upload starter aldrig print.';
   document.querySelector('.model-layout > div > p').textContent='Drej med fingeren eller musen · zoom med to fingre eller scroll. Orienteringen mod byggepladen bevares; modellen arrangeres på pladen.';
-  document.querySelector('label[for="file"]').textContent='STL (maks. 50 MiB) eller .gcode.3mf (maks. 100 MiB)';
+  document.querySelector('label[for="file"]').textContent='STL / 3MF-model (maks. 50 MiB) eller .gcode.3mf (maks. 100 MiB)';
   element('slice-form').onsubmit=async event=>{
     event.preventDefault(); const job=modelJobs.find(item=>item.id===selectedModel);if(!job)return;
     element('slice-button').disabled=true;
     try {
-      await api(`/api/jobs/${job.id}/slice`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...JSON.parse(element('slice-slot').value),layer_height:Number(element('slice-layer').value),infill:Number(element('slice-infill').value)})});
+      await api(`/api/jobs/${job.id}/slice`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...JSON.parse(element('slice-slot').value),...(job.model_info.filaments?{filaments:job.model_info.filaments.map((_,index)=>JSON.parse(element(`project-filament-${index}`).value))}:{}),layer_height:Number(element('slice-layer').value),infill:Number(element('slice-infill').value)})});
       await refresh();
     } catch(error){element('slice-message').textContent=error.message;element('slice-button').disabled=false;}
   };

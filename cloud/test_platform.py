@@ -269,3 +269,46 @@ class PlatformTests(unittest.TestCase):
         self.browser('/api/jobs/' + job_id + '/resolve', json.dumps({'confirm_job_id': job_id}).encode())
         self.assertEqual(self.browser('/api/status')['jobs'][0]['state'], 'resolved')
         self.assertTrue(self.agent.remote('/agent/result', {'id':job_id, 'state':'unknown'})['saved'])
+
+    def test_multicolor_project_upload_and_slice_options(self):
+        from cloud.test_slicing import project_file
+        data=project_file()
+        job_id=self.browser('/api/jobs',data,filename='colors.3mf')['id']
+        job=self.browser('/api/status')['jobs'][0]
+        self.assertEqual(job['state'],'model')
+        self.assertEqual(len(job['model_info']['filaments']),2)
+        self.agent.tick()
+        options={'filaments':[{'ams_id':0,'slot':1},{'ams_id':0,'slot':1}],'layer_height':0.2,'infill':15}
+        self.browser('/api/jobs/'+job_id+'/slice',json.dumps(options).encode())
+        job=self.browser('/api/status')['jobs'][0]
+        self.assertEqual(len(job['slice_options']['filaments']),2)
+        self.assertEqual(job['state'],'slice_queued')
+        from cloud.test_slicing import result_file
+        from slicer.worker import Worker
+        import io
+        import zipfile
+        token='slicer-test-token-at-least-32-characters'
+        with patch.dict('os.environ',{'SLICER_TOKEN':token,'SLICER_ALLOW_INTERNAL_HTTP':'1'}):
+            worker=Worker(self.cloud_url,token,self.directory.name,'/fake')
+            def fake_slice(data,options,destination,profiles,binary):
+                output=io.BytesIO()
+                with zipfile.ZipFile(io.BytesIO(result_file())) as original, zipfile.ZipFile(output,'w') as archive:
+                    for name in original.namelist():
+                        body=original.read(name)
+                        if name=='Metadata/slice_info.config':
+                            body=body.replace(b'</plate>',b'<filament id="2" type="PLA" color="#000000" used_g="1"/></plate>')
+                        if name=='Metadata/project_settings.config':
+                            config=json.loads(body);config['filament_settings_id']*=2;body=json.dumps(config).encode()
+                        archive.writestr(name,body)
+                path=destination/'result.gcode.3mf';path.write_bytes(output.getvalue());return path
+            with patch('slicer.worker.run_slice',side_effect=fake_slice):worker.tick()
+        job=self.browser('/api/status')['jobs'][0]
+        self.assertEqual(job['state'],'queued')
+        self.assertEqual(len(job['analysis']['filaments']),2)
+        payload={'confirm_job_id':job_id,'filaments':[{'filament_id':i,'ams_id':0,'slot':1} for i in (1,2)],'bed_clear':True,'accept_differences':True,'preview_checked':True}
+        self.browser('/api/jobs/'+job_id+'/approve',json.dumps(payload).encode())
+        self.agent.tick()
+        self.assertEqual(self.browser('/api/status')['jobs'][0]['state'],'simulated')
+        from print_plan import mapping
+        selection=self.browser('/api/status')['jobs'][0]['selection']
+        self.assertEqual(json.loads(mapping(selection)['ams_mapping']),[0,0])

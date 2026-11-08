@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'service'))
 sys.path.insert(1, str(Path(__file__).resolve().parents[1]))
 from server import validate as validate_archive, safe_diagnostics
 from print_plan import analyze, select, live_ready
-from cloud.model_files import stl_info
+from cloud.model_files import stl_info, three_mf_info
 from cloud import slicing
 
 
@@ -137,7 +137,7 @@ class Handler(BaseHTTPRequestHandler):
                                'last_seen': seen, 'pi': json.loads(telemetry['body']) if telemetry else None})
         elif self.command == 'POST' and self.path == '/api/jobs':
             name = self.headers.get('X-Filename', '')
-            if not re.fullmatch(r'[A-Za-z0-9_. -]{1,120}\.(?:gcode\.3mf|stl)', name, re.IGNORECASE):
+            if not re.fullmatch(r'[A-Za-z0-9_. -]{1,120}\.(?:3mf|stl)', name, re.IGNORECASE):
                 raise ValueError('Filename')
             with platform.db() as connection:
                 count = connection.execute('SELECT COUNT(*) FROM jobs').fetchone()[0]
@@ -145,15 +145,16 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond(507, {'error': 'Storage quota reached'})
                 return
             job_id = str(uuid.uuid4())
-            is_model = name.lower().endswith('.stl')
-            path = platform.root / (job_id + ('.stl' if is_model else '.gcode.3mf'))
+            is_3mf = name.lower().endswith('.3mf') and not name.lower().endswith('.gcode.3mf')
+            is_model = name.lower().endswith('.stl') or is_3mf
+            path = platform.root / (job_id + ('.3mf' if is_3mf else '.stl' if is_model else '.gcode.3mf'))
             try:
                 data = self.body((50 if is_model else 100) * 1024**2)
                 with path.open('xb') as target:
                     target.write(data)
                     target.flush()
                     os.fsync(target.fileno())
-                model_info = stl_info(data) if is_model else None
+                model_info = three_mf_info(data) if is_3mf else stl_info(data) if is_model else None
                 if not is_model:
                     validate_archive(path)
                 digest = hashlib.sha256(data).hexdigest()

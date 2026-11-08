@@ -39,8 +39,68 @@ def stl_info(data):
     return {'triangles': count, 'dimensions_mm': dimensions}
 
 
+def three_mf_info(data):
+    """Inspect a model archive without extracting user-controlled paths."""
+    import io
+    from pathlib import PurePosixPath
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            entries = archive.infolist()
+            names = [entry.filename for entry in entries]
+            if len(entries) > 4096 or sum(e.file_size for e in entries) > 512 * 1024**2 or len(set(names)) != len(names):
+                raise ValueError('3MF-arkivet er for stort eller har dubletter.')
+            if any('\\' in n or PurePosixPath(n).is_absolute() or '..' in PurePosixPath(n).parts for n in names):
+                raise ValueError('Ugyldige stier i 3MF.')
+            if '[Content_Types].xml' not in names or not any(n.lower().endswith('.model') for n in names):
+                raise ValueError('3MF mangler en 3D-model.')
+            points, triangles = [], 0
+            for name in names:
+                if not name.lower().endswith('.model'):
+                    continue
+                raw = archive.read(name)
+                if b'<!DOCTYPE' in raw.upper() or b'<!ENTITY' in raw.upper():
+                    raise ValueError('Ugyldig model-XML.')
+                root = ET.fromstring(raw)
+                if root.get('unit', 'millimeter') != 'millimeter':
+                    raise ValueError('3MF skal bruge millimeter.')
+                for node in root.iter():
+                    tag = node.tag.rsplit('}', 1)[-1]
+                    if tag == 'vertex':
+                        point = tuple(float(node.attrib[a]) for a in ('x','y','z'))
+                        if not all(math.isfinite(v) and abs(v) <= 1000000 for v in point):
+                            raise ValueError('Ugyldige modelkoordinater.')
+                        points.append(point)
+                    elif tag == 'triangle':
+                        triangles += 1
+                if len(points) > 3000000 or triangles > 1000000:
+                    raise ValueError('For stor 3MF-model.')
+            if not points or not triangles:
+                raise ValueError('3MF mangler trekanter.')
+            if 'Metadata/project_settings.config' in names and archive.getinfo('Metadata/project_settings.config').file_size > 2 * 1024**2:
+                raise ValueError('Projektindstillinger er for store.')
+            settings = json.loads(archive.read('Metadata/project_settings.config')) if 'Metadata/project_settings.config' in names else {}
+            if not isinstance(settings,dict):
+                raise ValueError('Ugyldige projektindstillinger.')
+            if 'Metadata/model_settings.config' in names:
+                raw = archive.read('Metadata/model_settings.config')
+                if b'<!DOCTYPE' in raw.upper() or b'<!ENTITY' in raw.upper():
+                    raise ValueError('Ugyldig projekt-XML.')
+                if len(ET.fromstring(raw).findall('plate')) > 1:
+                    raise ValueError('Upload et 3MF-projekt med én plade.')
+            colors = settings.get('filament_colour', ['#7282DD'])
+            if not isinstance(colors, list) or not 1 <= len(colors) <= 16 or any(not isinstance(c,str) or not re.fullmatch(r'#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?',c) for c in colors):
+                raise ValueError('Ugyldige 3MF-filamentfarver.')
+            return {'format':'3mf', 'triangles':triangles,
+                    'dimensions_mm':[round(max(p[a] for p in points)-min(p[a] for p in points),3) for a in range(3)],
+                    'filaments':[{'id':i+1,'color':c[:7]} for i,c in enumerate(colors)]}
+    except (zipfile.BadZipFile, ET.ParseError, KeyError, RuntimeError, NotImplementedError) as error:
+        raise ValueError('Ugyldig 3MF-model.') from error
+
+
 def sliced_preview(path):
     layers = {}
+    layer_tools = {}
+    tool = 0
     position = {'X': 0.0, 'Y': 0.0, 'Z': 0.0, 'E': 0.0}
     absolute_xyz, absolute_e = True, True
     started = False
@@ -55,6 +115,10 @@ def sliced_preview(path):
                 if not command:
                     continue
                 operation = command.split()[0]
+                if re.fullmatch(r'T\d+',operation):
+                    candidate=int(operation[1:])
+                    if candidate < 16: tool=candidate
+                    continue
                 if operation == 'G90': absolute_xyz = True
                 if operation == 'G91': absolute_xyz = False
                 if operation == 'M82': absolute_e = True
@@ -81,6 +145,7 @@ def sliced_preview(path):
                     omitted += 1
                     continue
                 segments.append([round(previous['X'], 3), round(previous['Y'], 3), round(position['X'], 3), round(position['Y'], 3)])
+                layer_tools.setdefault(height, []).append(tool)
                 count += 1
         root = ET.fromstring(archive.read('Metadata/slice_info.config'))
         settings=json.loads(archive.read('Metadata/project_settings.config'))
@@ -89,8 +154,8 @@ def sliced_preview(path):
         seconds=float(metadata.get('prediction',0))
         if not math.isfinite(used) or not math.isfinite(seconds) or used<0 or seconds<0:
             raise ValueError('Ugyldige slicerestimater.')
-    return {'layers': [{'z': height, 'segments': segments} for height, segments in sorted(layers.items())],
-            'estimated_seconds': seconds, 'filament_grams': round(used, 2),
+    return {'layers': [{'z': height, 'segments': segments, 'tools':layer_tools.get(height,[])} for height, segments in sorted(layers.items())],
+            'colors':settings.get('filament_colour', ['#5363CF']), 'estimated_seconds': seconds, 'filament_grams': round(used, 2),
             'printer_model_id':metadata.get('printer_model_id'),'nozzle_diameters':metadata.get('nozzle_diameters'),'bed_type':settings.get('curr_bed_type'),
             'layer_height':float(settings.get('layer_height',0)),'infill':settings.get('sparse_infill_density'),
             'omitted_segments': omitted, 'segment_count': count}
