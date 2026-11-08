@@ -2,7 +2,7 @@
 
 ## STL-upload, slicing og preview
 
-Webappen understøtter STL-upload, drejeligt 3D-preview og serverbaseret slicing
+Webappen understøtter STL, Bambu Studio 3MF-projekter med flere farver, 3D-preview og serverbaseret slicing
 til P2S via en separat Docker-worker. Resultatet har lag-preview, estimeret tid og
 filamentforbrug og skal godkendes særskilt før print.
 Se [opsætning af slicer i Dokploy](slicer/README.md). Pi-installationen ændres ikke.
@@ -170,3 +170,9 @@ Driverintegration og systemd skal efterfølgende verificeres på selve Pi'en.
 
 Driverreference: https://github.com/persano/open-bamboo-networking/tree/master/tools/plugin_runner
 
+
+## Flerfarveprint med AMS
+
+En færdig .gcode.3mf kan bruge flere filamenter. Et Bambu Studio .3mf-projekt bevarer dele, samling og malede farvefelter ved klargøring. Vælg AMS-plads for hvert filament; alle materialer og spoler kontrolleres igen på Pi’en. Ét AMS giver fire fysiske spolepladser. En STL indeholder ingen farvefordeling og klargøres fortsat med ét filament.
+
+Opdatér cloud, slicer-container og Pi-agent/service sammen. Flerfarvejobs og andre filamentindeks kræver plan-version 3; cloud nægter aflevering til ældre agenter. 3MF-projekter kræver slicer-version 2. Eksisterende étfarvejobs understøttes fortsat. Aktive jobs om-skrives ikke. Live-indstillinger aktiveres ikke af opdateringen.

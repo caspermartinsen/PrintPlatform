@@ -7,7 +7,7 @@ import time
 import urllib.request
 import urllib.error
 import uuid
-from print_plan import printer_available
+from print_plan import printer_available, PLAN_VERSION
 
 
 def request(base, path, token, body=None, raw=False, extra=None):
@@ -82,7 +82,7 @@ class Agent:
         if status.get('mode') not in ('simulate','live'):
             raise ValueError('Unknown local mode')
         response = self.remote('/agent/poll', {'mode': status['mode'], 'remote_live_enabled':status.get('remote_live_enabled',False),
-            'local_busy':awaiting or any(item['state'] in ('starting','submitted','unknown') for item in status['jobs']), 'plan_version': 2, 'printer': status['printer']})
+            'local_busy':awaiting or any(item['state'] in ('starting','submitted','unknown') for item in status['jobs']), 'plan_version': min(PLAN_VERSION,status.get('plan_version',2)), 'printer': status['printer']})
         for local_id in response.get('resolutions',[]):
             local_job = next((item for item in status['jobs'] if item['id']==local_id),None)
             printer = status['printer']

@@ -18,9 +18,9 @@
   <section id="new-print" aria-labelledby="upload-heading">
     <span class="eyebrow">1 · VÆLG MODEL</span>
     <h2 id="upload-heading">Hvad vil du printe?</h2>
-    <p>Upload STL til modelpreview og klargøring, eller en færdig .gcode.3mf. Upload starter aldrig print.</p>
+    <p>Upload STL, et Bambu Studio 3MF-projekt med farver, eller en færdigslicet .gcode.3mf. Upload starter aldrig print.</p>
     <form id="upload">
-      <label for="file">STL (maks. 50 MiB) eller .gcode.3mf (maks. 100 MiB)</label>
+      <label for="file">STL (maks. 50 MiB) eller 3MF / .gcode.3mf (maks. 100 MiB)</label>
       <input required type="file" id="file" accept=".stl,.3mf" aria-describedby="message">
       <button id="uploadButton">Upload model eller printfil</button>
     </form>
@@ -33,7 +33,7 @@
     <div class="model-layout">
       <div>
         <div id="model-preview" class="model-preview" aria-label="Drejeligt 3D-preview af model eller printbaner"></div>
-        <p>Drej visningen med fingeren eller musen · zoom med to fingre eller scroll. Modellens printorientering ændres ikke, når du drejer visningen.</p>
+        <p>Drej visningen med fingeren eller musen · zoom med to fingre eller scroll. Modellens printorientering ændres ikke, når du drejer visningen. Kontrollér den endelige farvefordeling i de slicede printbaner.</p>
         <div id="layer-controls" hidden>
           <label for="preview-layer" id="layer-label">Lag</label>
           <input id="preview-layer" type="range" min="1" value="1">
@@ -41,8 +41,8 @@
         </div>
       </div>
       <form id="slice-form">
-        <label for="slice-slot">Filament og farve fra AMS</label>
-        <select id="slice-slot" required><option value="">Afventer friske filamentoplysninger…</option></select>
+        <fieldset id="slice-settings"><legend>Filamenter og kvalitet</legend>
+        <div id="slice-filaments"><label for="slice-slot">Filament og farve fra AMS</label><select id="slice-slot" required><option value="">Afventer friske filamentoplysninger…</option></select></div>
         <label for="slice-quality">Kvalitet</label>
         <select id="slice-quality"><option value="0.12">Fin · flere detaljer</option><option value="0.2" selected>Standard · til de fleste modeller</option><option value="0.28">Hurtig · færre detaljer</option></select>
         <details class="advanced"><summary>Avancerede indstillinger</summary>
@@ -51,8 +51,8 @@
           <label for="slice-infill">Fyld i modellen (infill)</label>
           <select id="slice-infill"><option value="10">10 %</option><option value="15" selected>15 %</option><option value="20">20 %</option><option value="40">40 %</option><option value="100">100 %</option></select>
         </details>
-        <p>P2S · 0,4 mm dyse · Textured PEI · én model og farve. Modellen skal kunne printes uden støtte. STL tolkes i millimeter.</p>
-        <button id="slice-button">Klargør model</button>
+        <p>P2S · 0,4 mm dyse · Textured PEI · 3MF bevarer projektets farver og dele. Modellen skal kunne printes uden støtte. STL tolkes i millimeter.</p>
+        <button id="slice-button">Klargør model</button></fieldset>
         <button type="button" id="show-original" class="secondary">Vis original model</button>
         <p id="slice-message" role="status" aria-live="polite"></p>
         <a id="download-sliced" hidden>Download slicet .gcode.3mf</a>
