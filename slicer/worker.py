@@ -9,6 +9,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import zipfile
 import threading
 import time
 import urllib.error
@@ -16,7 +17,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from cloud.model_files import stl_info, project_info, prepare_project
+from cloud.model_files import stl_info, project_info, prepare_project, safe_xml
 from slicer.profiles import FILAMENTS
 
 
@@ -88,6 +89,17 @@ def run_slice(data, options, destination, profiles, binary):
         str(profiles / 'machine.json')+';'+str(process_path),'--load-filaments',';'.join(filament_paths),
         '--curr-bed-type','Textured PEI Plate','--arrange','0' if project else '1','--ensure-on-bed',
         '--slice','1','--export-3mf','result.gcode.3mf','--outputdir',str(destination),str(model)]
+    if project:
+        with zipfile.ZipFile(model) as archive:
+            if 'Metadata/custom_gcode_per_layer.xml' in archive.namelist():
+                changes = safe_xml(archive.read('Metadata/custom_gcode_per_layer.xml'))
+                instructions = [{'type':'ToolChange','print_z':float(layer.get('top_z')),
+                                 'extruder':int(layer.get('extruder')),'color':layer.get('color'),'extra':''}
+                                for layer in changes.findall('.//layer')]
+                if instructions:
+                    changes_path = destination / 'color-changes.json'
+                    changes_path.write_text(json.dumps({'mode':'MultiAsSingle','gcodes':instructions}))
+                    command += ['--load-custom-gcodes',str(changes_path)]
     environment = {'PATH':os.environ.get('PATH','/usr/bin:/bin'), 'HOME':str(destination),
                    'LANG':'C.UTF-8','DISPLAY':os.environ.get('DISPLAY',':99'), 'LIBGL_ALWAYS_SOFTWARE':'1'}
     with (destination / 'cli.log').open('wb') as log:
