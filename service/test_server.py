@@ -1,4 +1,5 @@
 import hashlib
+import fcntl
 import http.client
 import io
 import json
@@ -24,6 +25,13 @@ def archive(entries=None):
 
 
 class ServiceTests(unittest.TestCase):
+    def test_update_lock_blocks_start_without_changing_queue(self):
+        job_id = self.upload()
+        with (self.store.root / 'update.lock').open('a') as guard:
+            fcntl.flock(guard,fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaises(ValueError):
+                self.store.start(job_id)
+        self.assertEqual(self.store.jobs()[0]['state'],'queued')
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.store = Store(self.directory.name)

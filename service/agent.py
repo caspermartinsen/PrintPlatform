@@ -24,7 +24,7 @@ def request(base, path, token, body=None, raw=False, extra=None):
 
 
 class Agent:
-    def __init__(self, root, cloud, agent_token, local, api_token):
+    def __init__(self, root, cloud, agent_token, local, api_token, update_guard=None):
         if not cloud.startswith('https://'):
             raise ValueError('Platform URL must use HTTPS')
         self.root = Path(root)
@@ -35,6 +35,7 @@ class Agent:
         self.agent_token = agent_token
         self.local = local.rstrip('/')
         self.api_token = api_token
+        self.update_guard = update_guard
 
     def remote(self, path, body=None, raw=False):
         return request(self.cloud, path, self.agent_token, body, raw)
@@ -53,6 +54,16 @@ class Agent:
             os.close(descriptor)
 
     def tick(self):
+        if self.update_guard is None:
+            return self.work()
+        with Path(self.update_guard).open('a') as guard:
+            try:
+                fcntl.flock(guard, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return
+            return self.work()
+
+    def work(self):
         for path in self.root.glob('*.json'):
             record = json.loads(path.read_text())
             if record['state'] == 'pending':
@@ -100,7 +111,8 @@ class Agent:
 def main():
     os.umask(0o077)
     agent = Agent(os.environ.get('AGENT_DATA_DIR', '/var/lib/print-agent'), os.environ['PLATFORM_URL'],
-                  os.environ['AGENT_TOKEN'], 'http://127.0.0.1:' + os.environ.get('PORT', '8787'), os.environ['API_TOKEN'])
+                  os.environ['AGENT_TOKEN'], 'http://127.0.0.1:' + os.environ.get('PORT', '8787'), os.environ['API_TOKEN'],
+                  Path(os.environ.get('DATA_DIR', '/var/lib/print-service')) / 'update.lock')
     connected = False
     while True:
         try:

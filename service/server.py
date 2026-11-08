@@ -88,6 +88,22 @@ class Store:
             connection.execute('UPDATE jobs SET state=? WHERE id=?', (state, job_id))
 
     def start(self, job_id, selection=None):
+        update_lock = (self.root / 'update.lock').open('a')
+        try:
+            fcntl.flock(update_lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            self.reserve(job_id, selection)
+        except (OSError, ValueError):
+            update_lock.close()
+            raise ValueError('Service is updating or job cannot be started')
+        threading.Thread(target=self.run_locked, args=(job_id, update_lock), daemon=True).start()
+
+    def run_locked(self, job_id, update_lock):
+        try:
+            self.run(job_id)
+        finally:
+            update_lock.close()
+
+    def reserve(self, job_id, selection):
         with self.db() as connection:
             job = connection.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
             if not job or job['state'] != 'queued':
@@ -95,7 +111,6 @@ class Store:
             if connection.execute("SELECT 1 FROM jobs WHERE state IN ('starting','submitted','unknown')").fetchone():
                 raise ValueError('Printer reserved; reconcile the active job first')
             connection.execute("UPDATE jobs SET state='starting',selection=? WHERE id=?", (json.dumps(selection) if selection else None, job_id))
-        threading.Thread(target=self.run, args=(job_id,), daemon=True).start()
 
     def run(self, job_id):
         state = 'unknown'

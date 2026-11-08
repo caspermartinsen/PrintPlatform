@@ -1,0 +1,18 @@
+[Unit]
+Description=Update PrintPlatform Pi software from GitHub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/print-platform/deploy/updater.py
+StateDirectory=print-updater
+StateDirectoryMode=0700
+UMask=0077
+TimeoutStartSec=180
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/print-platform/service /var/lib/print-service /var/lib/print-updater
+

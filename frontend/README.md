@@ -1,5 +1,40 @@
 # Dokploy-webapp og Pi-agent
 
+## Automatiske Pi-opdateringer
+
+Efter engangsinstallation kan `sudo systemctl enable --now print-updater.timer`
+aktivere automatisk kontrol af GitHub `main` cirka hvert andet minut. Pi'en
+opretter selv de udgående forbindelser; der kræves ingen åbne porte eller GitHub-nøgle
+til det nuværende offentligt læsbare repo. Push til main er herefter en softwareudrulning
+til Pi'en, uafhængigt af hvornår Dokploy er færdig med at deploye webappen.
+
+Kun fire godkendte runtime-filer opdateres: server, telemetri, agent og printplan.
+De hentes fra det præcise commit over HTTPS og syntakskontrolleres uden at eksekvere
+kode som root. Updateren kører ikke install.sh fra GitHub. Nye afhængigheder,
+systemd-units, ændringer af updateren og konfiguration kræver fortsat manuel installation.
+Repoets kode kører som den eksisterende servicebruger efter installation.
+
+Fælles proceslås for agent og startkommandoer forhindrer opdatering midt i en
+opgave. Aktive/uklare printjob, uafleverede agentresultater og printertilstandene
+RUNNING/PREPARE/PAUSE/SLICING udskyder opdateringen. Stoppet service startes ikke
+automatisk af updateren. Opdatering stopper kort API og agent, tager lokal backup
+af kode og kødatabase og starter API'et igen. API-helbredstjek skal bestå før
+agenten genstartes. Hvis den nye API-version fejler, gendannes kode og database.
+Et fejlet commit prøves ikke igen før næste commit eller manuel fjernelse af
+`/var/lib/print-updater/version.json`. Cloud-database og printerdriver ændres ikke.
+Hemmeligheder og PRINT_MODE bevares. Opdatering starter ikke print.
+
+```sh
+systemctl list-timers print-updater.timer
+sudo journalctl -u print-updater.service -n 20 --no-pager
+sudo cat /var/lib/print-updater/version.json
+sudo systemctl start print-updater.service
+```
+
+Slå automatisk opdatering fra med `sudo systemctl disable --now print-updater.timer`.
+Lokale kildefiler i `~/PrintPlatform` opdateres ikke; det er den installerede kode
+i `/opt/print-platform/service`, der opdateres.
+
 Frontend og backend kører sammen i én container. Pi'en opretter selv udgående
 HTTPS til cloud og behøver ingen åbne porte. Denne version udfører kun simulerede
 cloud-job; lokal live-tilstand afvises af agenten.

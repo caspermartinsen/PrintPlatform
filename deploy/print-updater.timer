@@ -1,0 +1,11 @@
+[Unit]
+Description=Check PrintPlatform GitHub version every two minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=2min
+RandomizedDelaySec=15
+Unit=print-updater.service
+
+[Install]
+WantedBy=timers.target

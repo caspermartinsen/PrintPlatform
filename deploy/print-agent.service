@@ -16,6 +16,7 @@ UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
+ReadWritePaths=/var/lib/print-service/update.lock
 ProtectHome=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
