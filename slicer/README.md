@@ -55,8 +55,10 @@ valgfri via `SLICER_ALLOW_INTERNAL_HTTP=1`; brug kun dette på et privat Docker-
 bestemmer slicerprofilen. Ved senere godkendelse kontrolleres AMS-indholdet igen.
 Modellen kan slices igen, indtil jobbet godkendes. Godkendte/afsendte job kan ikke
 om-slices. Et nyt slice-forsøg får et nyt id; et gammelt resultat kan ikke erstatte
-et nyere. Ved afbrudt worker kan jobbet stå som *Slicer modellen*; genstart forsøget
-med **Genstart slice-forsøg** efter kontrol af workerens log. En ældre kørsel kan
+et nyere. Et slice-forsøg reserveres i højst syv minutter. Ved afbrudt worker bliver
+jobbet derefter *Slicing fejlede* ved næste statuskald eller worker-poll.
+Klargør modellen igen; et udløbet resultat accepteres ikke. Under et aktivt
+forsøg kan **Genstart slice-forsøg** fortsat bruges efter kontrol af workerens log. En ældre kørsel kan
 fortsætte indtil timeout, men resultatet ignoreres, og kun det nye forsøg accepteres.
 
 ## Teknik og begrænsninger
@@ -81,7 +83,7 @@ vellykket print. Tid og gram er slicerens estimater. WebGL kræves til 3D-visnin
 Den genererede `.gcode.3mf` kan stadig downloades til kontrol i Bambu Studio.
 
 Kun én worker understøttes i første version. Bevar webappens `/data`-volume;
-workerens midlertidige filer slettes efter hver opgave. Forældreløse slicing-job
+workerens midlertidige filer slettes efter hver opgave. Udløbne slicing-job markeres fejlede og
 genforsøges manuelt. Gamle STL'er/resultater ryddes manuelt; samlet datakvote er
 ca. 2 GiB / 1000 job. Slicing og preview til eksisterende `.gcode.3mf`-uploads
 er ikke en del af denne tilføjelse; de følger fortsat det eksisterende forløb.
@@ -103,3 +105,4 @@ Bambu Studio-kilde og licens (AGPL-3.0):
 https://github.com/bambulab/BambuStudio/tree/v02.08.04.57
 CLI-dokumentation: https://github.com/bambulab/BambuStudio/wiki/Command-Line-Usage
 3D-preview bruger Three.js (MIT): https://github.com/mrdoob/three.js/tree/r180
+

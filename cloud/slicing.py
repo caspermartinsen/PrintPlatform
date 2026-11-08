@@ -8,6 +8,12 @@ from cloud.model_files import sliced_preview
 
 
 PROFILES = {'PLA Basic': 'pla-basic', 'PLA Matte': 'pla-matte', 'PLA Translucent': 'pla-translucent'}
+SLICE_LEASE_SECONDS = 420
+
+
+def expire(platform):
+    with platform.db() as connection:
+        connection.execute("UPDATE jobs SET state='slice_failed',slice_error='worker_interrupted',slice_token=NULL,slice_expires=NULL WHERE state='slicing' AND (slice_expires IS NULL OR slice_expires < ?)", (time.time(),))
 
 
 def route(handler):
@@ -16,6 +22,7 @@ def route(handler):
     match = re.fullmatch(r'/(api|slicer)/jobs/([a-f0-9-]{36})/(model|slice|preview|sliced-file|result|failed)', path)
     if handler.command == 'POST' and path in ('/slicer/poll','/slicer/heartbeat'):
         json.loads(handler.body())
+        expire(platform)
         with platform.db() as connection:
             connection.execute('INSERT OR REPLACE INTO slicer_health VALUES (1,?)', (time.time(),))
             if path == '/slicer/heartbeat':
@@ -23,12 +30,22 @@ def route(handler):
                 return True
             job = connection.execute("SELECT * FROM jobs WHERE state='slice_queued' ORDER BY created LIMIT 1").fetchone()
             if job:
-                connection.execute("UPDATE jobs SET state='slicing' WHERE id=?", (job['id'],))
+                connection.execute("UPDATE jobs SET state='slicing',slice_expires=? WHERE id=?", (time.time() + SLICE_LEASE_SECONDS, job['id']))
         handler.respond(200, {'job': dict(job) if job else None})
         return True
     if not match:
         return False
     audience, job_id, action = match.groups()
+    if not getattr(handler, '_slice_locked', False):
+        with platform.job_guard(job_id):
+            handler._slice_locked = True
+            return route(handler)
+    if audience == 'slicer' and action in ('result', 'failed'):
+        expire(platform)
+    if handler.command == 'POST' and action == 'result' and not getattr(handler, '_result_locked', False):
+        with platform.files_guard:
+            handler._result_locked = True
+            return route(handler)
     with platform.db() as connection:
         row = connection.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
         if not row:
@@ -67,7 +84,7 @@ def route(handler):
         options = {'profile': PROFILES[slot['name']], 'profile_name': slot['name'], 'color':'#' + color[:6],
                    'layer_height': layer, 'infill': infill, 'ams_id':slot['ams_id'], 'slot':slot['slot']}
         with platform.db() as connection:
-            connection.execute("UPDATE jobs SET state='slice_queued',slice_options=?,slice_token=?,analysis=NULL,selection=NULL,sha256=NULL,preview_ready=0,slice_error=NULL WHERE id=?", (json.dumps(options), str(uuid.uuid4()), job_id))
+            connection.execute("UPDATE jobs SET state='slice_queued',slice_options=?,slice_token=?,analysis=NULL,selection=NULL,sha256=NULL,preview_ready=0,slice_error=NULL,slice_expires=NULL WHERE id=?", (json.dumps(options), str(uuid.uuid4()), job_id))
         handler.respond(202, {'id':job_id,'state':'slice_queued'})
     elif handler.command == 'POST' and audience == 'slicer' and action in ('result','failed'):
         if handler.headers.get('X-Slice-Token') != job.get('slice_token') or job['state'] != 'slicing':
@@ -78,7 +95,7 @@ def route(handler):
             allowed = ('timeout','slicer_failed','invalid_result','worker_interrupted')
             reason = payload.get('error') if payload.get('error') in allowed else 'slicer_failed'
             with platform.db() as connection:
-                connection.execute("UPDATE jobs SET state='slice_failed',slice_error=? WHERE id=?", (reason,job_id))
+                connection.execute("UPDATE jobs SET state='slice_failed',slice_error=?,slice_expires=NULL WHERE id=? AND slice_token=? AND state='slicing'", (reason,job_id,job['slice_token']))
             handler.respond(200, {'saved':True})
             return True
         from server import validate
@@ -98,13 +115,18 @@ def route(handler):
             preview = sliced_preview(temporary)
             if not preview['segment_count'] or preview['printer_model_id']!='N7' or preview['nozzle_diameters']!='0.4' or preview['bed_type']!='Textured PEI Plate' or preview['layer_height']!=options['layer_height'] or preview['infill']!=str(options['infill'])+'%':
                 raise ValueError('Slicerresultatet mangler visbare printbaner.')
-            (platform.root / (job_id + '.preview.json')).write_text(json.dumps(preview))
-            temporary.replace(platform.root / (job_id + '.gcode.3mf'))
             with platform.db() as connection:
-                connection.execute("UPDATE jobs SET state='queued',analysis=?,sha256=?,preview_ready=1 WHERE id=?", (json.dumps(analysis), hashlib.sha256(data).hexdigest(),job_id))
+                current = connection.execute('SELECT state,slice_token FROM jobs WHERE id=?', (job_id,)).fetchone()
+                if current['state'] != 'slicing' or current['slice_token'] != job['slice_token']:
+                    handler.respond(409, {'error': 'Dette slice-forsøg er udløbet.'})
+                    return True
+                (platform.root / (job_id + '.preview.json')).write_text(json.dumps(preview))
+                temporary.replace(platform.root / (job_id + '.gcode.3mf'))
+                connection.execute("UPDATE jobs SET state='queued',analysis=?,sha256=?,preview_ready=1,slice_expires=NULL WHERE id=?", (json.dumps(analysis), hashlib.sha256(data).hexdigest(),job_id))
         finally:
             temporary.unlink(missing_ok=True)
         handler.respond(201, {'id':job_id,'state':'queued'})
     else:
         handler.respond(404, {'error':'Not found'})
     return True
+

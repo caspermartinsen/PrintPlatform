@@ -9,19 +9,24 @@ import re
 import sqlite3
 import sys
 import time
+import threading
 import uuid
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'service'))
 sys.path.insert(1, str(Path(__file__).resolve().parents[1]))
-from server import validate as validate_archive, safe_diagnostics
+from server import validate as validate_archive, safe_diagnostics, upload_name
 from print_plan import analyze, select, live_ready
 from cloud.model_files import stl_info
 from cloud import slicing
 
 
-class Platform(HTTPServer):
-    def __init__(self, address, root, username, password, agent_token, public_url):
+class Platform(ThreadingHTTPServer):
+    def __init__(self, address, root, username, password, agent_token, public_url, bind_and_activate=True):
+        self.db_guard = threading.RLock()
+        self.files_guard = threading.RLock()
+        self.job_guards = [threading.RLock() for _ in range(64)]
+        self.request_slots = threading.BoundedSemaphore(16)
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.browser_auth = 'Basic ' + base64.b64encode((username + ':' + password).encode()).decode()
@@ -36,19 +41,52 @@ class Platform(HTTPServer):
                     connection.execute('ALTER TABLE jobs ADD COLUMN ' + column + ' TEXT')
             if 'preview_ready' not in columns:
                 connection.execute('ALTER TABLE jobs ADD COLUMN preview_ready INTEGER DEFAULT 0')
+            if 'slice_expires' not in columns:
+                connection.execute('ALTER TABLE jobs ADD COLUMN slice_expires REAL')
             connection.execute('CREATE TABLE IF NOT EXISTS slicer_health (id INTEGER PRIMARY KEY, seen REAL)')
-        super().__init__(address, Handler)
+        super().__init__(address, Handler, bind_and_activate=bind_and_activate)
+
+    def job_guard(self, job_id):
+        return self.job_guards[hash(job_id) % len(self.job_guards)]
+
+    def get_request(self):
+        request, address = super().get_request()
+        request.settimeout(20)
+        return request, address
+
+    def process_request(self, request, client_address):
+        if not self.request_slots.acquire(blocking=False):
+            try:
+                request.settimeout(1)
+                request.sendall(b'HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nRetry-After: 1\r\nContent-Length: 0\r\n\r\n')
+            except OSError:
+                pass
+            finally:
+                self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self.request_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.request_slots.release()
 
     @contextlib.contextmanager
     def db(self):
-        connection = sqlite3.connect(self.root / 'platform.sqlite')
-        connection.row_factory = sqlite3.Row
-        connection.execute('PRAGMA synchronous=FULL')
-        try:
-            with connection:
-                yield connection
-        finally:
-            connection.close()
+        with self.db_guard:
+            connection = sqlite3.connect(self.root / 'platform.sqlite')
+            connection.row_factory = sqlite3.Row
+            connection.execute('PRAGMA synchronous=FULL')
+            try:
+                with connection:
+                    yield connection
+            finally:
+                connection.close()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -114,12 +152,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def route(self, agent):
         platform = self.server
+        mutation = re.fullmatch(r'/api/jobs/([a-f0-9-]{36})/(approve|resolve)', self.path)
+        if self.command == 'POST' and mutation and not getattr(self, '_job_locked', False):
+            with platform.job_guard(mutation[1]):
+                self._job_locked = True
+                return self.route(agent)
+        if self.command == 'POST' and self.path == '/api/jobs' and not getattr(self, '_upload_locked', False):
+            with platform.files_guard:
+                self._upload_locked = True
+                return self.route(agent)
         if slicing.route(self):
             return
         if self.command == 'GET' and not agent and self.path in ('/', '/app.js', '/style.css','/preview.js'):
             name, mime = {'/': ('index.html', 'text/html; charset=utf-8'), '/app.js': ('app.js', 'application/javascript'), '/style.css': ('style.css', 'text/css'),'/preview.js':('built/preview.js','application/javascript')}[self.path]
             self.respond(200, (Path(__file__).parents[1] / 'frontend' / name).read_bytes(), mime)
         elif self.command == 'GET' and self.path == '/api/status':
+            slicing.expire(platform)
             with platform.db() as connection:
                 jobs = [dict(row) for row in connection.execute('SELECT * FROM jobs ORDER BY created DESC LIMIT 1000')]
                 telemetry = connection.execute('SELECT * FROM telemetry WHERE id=1').fetchone()
@@ -136,9 +184,7 @@ class Handler(BaseHTTPRequestHandler):
                                'live_enabled': os.environ.get('ALLOW_LIVE_PRINT','0') == '1' and telemetry is not None and time.time()-seen < 45 and json.loads(telemetry['body']).get('remote_live_enabled') is True,
                                'last_seen': seen, 'pi': json.loads(telemetry['body']) if telemetry else None})
         elif self.command == 'POST' and self.path == '/api/jobs':
-            name = self.headers.get('X-Filename', '')
-            if not re.fullmatch(r'[A-Za-z0-9_. -]{1,120}\.(?:gcode\.3mf|stl)', name, re.IGNORECASE):
-                raise ValueError('Filename')
+            name = upload_name(self.headers, allow_stl=True)
             with platform.db() as connection:
                 count = connection.execute('SELECT COUNT(*) FROM jobs').fetchone()[0]
             if count >= 1000 or sum(item.stat().st_size for item in platform.root.iterdir()) > 2 * 1024**3:
@@ -149,6 +195,9 @@ class Handler(BaseHTTPRequestHandler):
             path = platform.root / (job_id + ('.stl' if is_model else '.gcode.3mf'))
             try:
                 data = self.body((50 if is_model else 100) * 1024**2)
+                if sum(item.stat().st_size for item in platform.root.iterdir()) + len(data) > 2 * 1024**3:
+                    self.respond(507, {'error': 'Lagerkvoten er nået. Der er ikke plads til filen.'})
+                    return
                 with path.open('xb') as target:
                     target.write(data)
                     target.flush()
@@ -199,8 +248,11 @@ class Handler(BaseHTTPRequestHandler):
                     changed = connection.execute("UPDATE jobs SET state='approved',selection=?,analysis=?,execution_mode=? WHERE id=? AND state='queued'", (json.dumps(selection), json.dumps(analysis), execution_mode, job_id)).rowcount
                 else:
                     target = connection.execute('SELECT state FROM jobs WHERE id=?',(job_id,)).fetchone()
-                    if target and target['state']=='submitted' and payload.get('printer_checked_idle') is not True:
-                        raise ValueError('Printer inspection required')
+                    if target and target['state'] == 'dispatched':
+                        self.respond(409, {'error': 'Afvent Pi’ens kvittering, før jobbet kan lukkes.'})
+                        return
+                    if payload.get('printer_checked_idle') is not True:
+                        raise ValueError('Bekræft fysisk kontrol af printer og tom byggeplade.')
                     changed = connection.execute("UPDATE jobs SET state='resolved' WHERE id=? AND state IN ('unknown','dispatched','submitted')", (job_id,)).rowcount
             self.respond(200 if changed else 409, {'saved': bool(changed)})
         elif agent and self.command == 'POST' and self.path == '/agent/poll':
@@ -215,8 +267,8 @@ class Handler(BaseHTTPRequestHandler):
                     connection.execute("UPDATE jobs SET state='dispatched' WHERE id=?", (job['id'],))
                 resolutions = [json.loads(row['receipt']).get('local_job_id') for row in connection.execute("SELECT receipt FROM jobs WHERE state='resolved' AND receipt IS NOT NULL")]
             command = dict(job) if job else None
-            if command and command.get('model_info'):
-                command['name'] = Path(command['name']).stem + '.gcode.3mf'
+            if command:
+                command['name'] = command['id'] + '.gcode.3mf'
             self.respond(200, {'job': command,'resolutions':[item for item in resolutions if item]})
         elif agent and self.command == 'GET' and re.fullmatch(r'/agent/files/[a-f0-9-]{36}', self.path):
             job_id = self.path.split('/')[-1]
@@ -231,14 +283,26 @@ class Handler(BaseHTTPRequestHandler):
             if report['state'] not in ('simulated', 'submitted', 'unknown'):
                 raise ValueError('Invalid state')
             with platform.db() as connection:
-                target = connection.execute('SELECT execution_mode FROM jobs WHERE id=?',(report['id'],)).fetchone()
+                target = connection.execute('SELECT * FROM jobs WHERE id=?',(report['id'],)).fetchone()
                 if target and (report['state']=='submitted' and target['execution_mode']!='live' or report['state']=='simulated' and target['execution_mode']=='live'):
                     raise ValueError('Result does not match approved execution mode')
                 receipt = {'local_job_id':report.get('local_job_id'), 'driver_accepted':report['state']=='submitted',
                            'diagnostics':safe_diagnostics(report.get('diagnostics',{}))}
-                changed = connection.execute("UPDATE jobs SET state=?,receipt=? WHERE id=? AND state IN ('dispatched', ?)", (report['state'], json.dumps(receipt), report['id'], report['state'])).rowcount
-                if not changed:
-                    changed = connection.execute("SELECT 1 FROM jobs WHERE id=? AND state='resolved'", (report['id'],)).fetchone() is not None
+                previous = json.loads(target['receipt']) if target and target['receipt'] else {}
+                if previous.get('local_job_id') and receipt['local_job_id'] and previous['local_job_id'] != receipt['local_job_id']:
+                    self.respond(409, {'error': 'Kvitteringen tilhører et andet lokalt job.'})
+                    return
+                receipt['local_job_id'] = receipt['local_job_id'] or previous.get('local_job_id')
+                receipt['driver_accepted'] = receipt['driver_accepted'] or previous.get('driver_accepted', False)
+                changed = False
+                if target and target['state'] in ('dispatched', 'unknown', report['state'], 'resolved'):
+                    state = report['state']
+                    if target['state'] == 'resolved':
+                        discovered_execution = (receipt['local_job_id'] and not previous.get('local_job_id')
+                                                or receipt['driver_accepted'] and not previous.get('driver_accepted'))
+                        state = 'unknown' if discovered_execution and report['state'] != 'simulated' else 'resolved'
+                    connection.execute('UPDATE jobs SET state=?,receipt=? WHERE id=?', (state, json.dumps(receipt), report['id']))
+                    changed = True
             self.respond(200 if changed else 409, {'saved': bool(changed)})
         else:
             self.respond(404, {'error': 'Not found'})
@@ -255,3 +319,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

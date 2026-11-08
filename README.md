@@ -13,7 +13,7 @@ Repo-roden indeholder nu Dockerfile til en samlet frontend/cloud-backend.
 Pi-agenten henter selv godkendte job via udgående HTTPS og sender printerstatus
 tilbage. Ingen indgående forbindelse til hjemmenettet er nødvendig.
 Se [Dokploy-opsætning og Pi-agent](frontend/README.md) for miljøvariabler,
-permanent lager og installation. Cloud-job udføres kun som simulering.
+permanent lager og installation. Standard er simulering; fysisk start kræver særskilt aktivering og godkendelse på begge sider.
 
 Projektet samler `service/`, `frontend/` og `deploy/`. Python 3.11+ og
 standardbiblioteket er nok. Pi'ens eksisterende `open-bamboo-persano` er en separat
@@ -150,8 +150,8 @@ curl -H "Authorization: Bearer $API_TOKEN" -H 'Content-Type: application/json' \
   http://127.0.0.1:8787/v1/jobs/JOB_ID/resolve
 ```
 
-En fremtidig webapp skal have et backendlag med brugerlogin, som holder API-nøglen
-server-side og bruger en privat, krypteret forbindelse til Pi'en. Eksponér ikke
+Webappens backend holder API-nøgler væk fra browseren. Pi-agenten opretter
+selv den udgående HTTPS-forbindelse; brugerlogin er foreløbig fælles HTTP Basic. Eksponér ikke
 Pi-porten på internettet. Systemd genstarter servicen efter fejl og ved boot.
 Backup kræver stop af servicen og kopi af hele `/var/lib/print-service` samt
 konfigurationen separat; dette indeholder følsomme data.
@@ -169,3 +169,4 @@ autentificering, arkivafvisning og eksplicit start testes uden netværk til prin
 Driverintegration og systemd skal efterfølgende verificeres på selve Pi'en.
 
 Driverreference: https://github.com/persano/open-bamboo-networking/tree/master/tools/plugin_runner
+
