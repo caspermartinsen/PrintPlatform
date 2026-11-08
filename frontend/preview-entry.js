@@ -1,12 +1,12 @@
 import * as THREE from 'three';
-import {ThreeMFLoader} from 'three/examples/jsm/loaders/3MFLoader.js';
 import {STLLoader} from 'three/examples/jsm/loaders/STLLoader.js';
+import {ThreeMFLoader} from 'three/examples/jsm/loaders/3MFLoader.js';
 import {OrbitControls} from 'three/examples/jsm/controls/OrbitControls.js';
 
-export async function mount(container, url, kind, signal, format) {
+export async function mount(container, url, kind, signal) {
   const response = await fetch(url,{signal});
   if (!response.ok) throw new Error('Preview kunne ikke hentes.');
-  const data = kind === 'model' ? await response.arrayBuffer() : await response.json();
+  const data = kind !== 'sliced' ? await response.arrayBuffer() : await response.json();
   signal?.throwIfAborted();
   const scene = new THREE.Scene(); scene.background = new THREE.Color('#f5f7fc');
   const renderer = new THREE.WebGLRenderer({antialias:true});
@@ -19,41 +19,40 @@ export async function mount(container, url, kind, signal, format) {
   scene.add(new THREE.HemisphereLight('#ffffff','#67728a',3));
   const light = new THREE.DirectionalLight('#ffffff',3); light.position.set(100,-100,300); scene.add(light);
   let object;
+  const layerEnds=[];
   const draw = () => renderer.render(scene,camera);
   function removeObject() {
     if (!object) return;
-    scene.remove(object); object.traverse(child=>{child.geometry?.dispose();if(Array.isArray(child.material))child.material.forEach(material=>material.dispose());else child.material?.dispose();});
+    scene.remove(object);object.traverse(item=>{item.geometry?.dispose();if(Array.isArray(item.material))item.material.forEach(material=>material.dispose());else item.material?.dispose();});
   }
   function setLayer(index) {
     if (kind !== 'sliced') return;
-    removeObject();
-    const positions=[], colors=[];
-    for (const layer of data.layers.slice(0,index+1)) {
-      layer.segments.forEach((segment,index)=>{
-        positions.push(segment[0],segment[1],layer.z,segment[2],segment[3],layer.z);
-        const value=data.colors?.[layer.tools?.[index] ?? 0];
-        const color=new THREE.Color(/^#[0-9a-f]{6}$/i.test(value || '')?value:'#5363cf');
-        colors.push(color.r,color.g,color.b,color.r,color.g,color.b);
-      });
-    }
-    const geometry=new THREE.BufferGeometry(); geometry.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));
-    geometry.setAttribute('color',new THREE.Float32BufferAttribute(colors,3));
-    object=new THREE.LineSegments(geometry,new THREE.LineBasicMaterial({vertexColors:true})); scene.add(object); draw();
+    object.geometry.setDrawRange(0,layerEnds[index] || 0); draw();
   }
   if (kind === 'model') {
-    if (format === '3mf') {
-      object=new ThreeMFLoader().parse(data);
-    } else {
-      const geometry=new STLLoader().parse(data); geometry.computeVertexNormals();
-      object=new THREE.Mesh(geometry,new THREE.MeshStandardMaterial({color:'#7282dd',roughness:.6}));
-    }
-    const box=new THREE.Box3().setFromObject(object);
-    const center=box.getCenter(new THREE.Vector3());
-    object.position.set(128-center.x,128-center.y,-box.min.z); scene.add(object);
-    controls.target.set(128,128,(box.max.z-box.min.z)/2);
-    const size=box.getSize(new THREE.Vector3()); const distance=Math.max(size.x,size.y,size.z,20)*2;
+    const geometry=new STLLoader().parse(data); geometry.computeVertexNormals(); geometry.computeBoundingBox();
+    const center=geometry.boundingBox.getCenter(new THREE.Vector3());
+    object=new THREE.Mesh(geometry,new THREE.MeshStandardMaterial({color:'#7282dd',roughness:.6}));
+    object.position.set(128-center.x,128-center.y,-geometry.boundingBox.min.z); scene.add(object);
+    controls.target.set(128,128,(geometry.boundingBox.max.z-geometry.boundingBox.min.z)/2);
+    const size=geometry.boundingBox.getSize(new THREE.Vector3()); const distance=Math.max(size.x,size.y,size.z,20)*2;
     camera.position.set(128+distance,128-distance,size.z/2+distance);
+  } else if(kind === 'project') {
+    object=new ThreeMFLoader().parse(data);scene.add(object);
+    const box=new THREE.Box3().setFromObject(object);
+    if(box.isEmpty())throw new Error('Projektets modelvisning kræver klargøring. Farver og dele bevares i 3MF-filen.');
+    const size=box.getSize(new THREE.Vector3()),center=box.getCenter(new THREE.Vector3());const distance=Math.max(size.x,size.y,size.z,20)*2;
+    controls.target.copy(center);camera.position.set(center.x+distance,center.y-distance,center.z+distance);
   } else {
+    const positions=[],colors=[];
+    const palette=new Map((data.filaments||[]).map(item=>[item.id,new THREE.Color(/^#[0-9a-f]{6}(?:[0-9a-f]{2})?$/i.test(item.color)?item.color.slice(0,7):'#5363cf')]));
+    for(const layer of data.layers) {
+      layer.segments.forEach((segment,index)=>{positions.push(segment[0],segment[1],layer.z,segment[2],segment[3],layer.z);const color=palette.get(layer.filament_ids?.[index]||1)||new THREE.Color('#5363cf');colors.push(color.r,color.g,color.b,color.r,color.g,color.b);});
+      layerEnds.push(positions.length/3);
+    }
+    const geometry=new THREE.BufferGeometry();geometry.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));
+    geometry.setAttribute('color',new THREE.Float32BufferAttribute(colors,3));
+    object=new THREE.LineSegments(geometry,new THREE.LineBasicMaterial({vertexColors:true}));scene.add(object);
     setLayer(data.layers.length-1);
     object.geometry.computeBoundingBox();
     const box=object.geometry.boundingBox;
@@ -66,3 +65,4 @@ export async function mount(container, url, kind, signal, format) {
   }); resize.observe(container); controls.update(); draw();
   return {data,setLayer,dispose(){resize.disconnect(); controls.dispose(); removeObject(); grid.geometry.dispose(); grid.material.dispose(); renderer.dispose(); renderer.domElement.remove();}};
 }
+

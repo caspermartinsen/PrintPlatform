@@ -1,9 +1,89 @@
 <!doctype html>
-<html lang="da"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PrintPlatform</title><link rel="stylesheet" href="/style.css"><script defer src="/app.js"></script></head>
-<body><main><header><div><span class="eyebrow">MARTINSEN · PRINTSTUDIO</span><h1>PrintPlatform<span>.</span></h1></div><span id="connection" class="badge">Forbinder…</span></header>
-<div class="notice">Simulering er aktiv. Godkendte job gennemløber køen uden at starte fysiske print.</div>
-<section id="model-workspace" hidden aria-labelledby="model-heading"><div class="section-heading"><h2 id="model-heading">Model og slicing</h2><span id="slicer-status">Afventer slicer</span></div><p id="model-name"></p><div class="model-layout"><div><div id="model-preview" class="model-preview" aria-label="Drejeligt 3D-preview af model eller printbaner"></div><p>Drej med fingeren eller musen · zoom med to fingre eller scroll. Modellen slices som uploadet, centreret på pladen.</p><div id="layer-controls" hidden><label for="preview-layer" id="layer-label">Lag</label><input id="preview-layer" type="range" min="1" value="1"><p id="slice-estimate"></p></div></div><form id="slice-form"><label for="slice-slot">Filament fra AMS</label><select id="slice-slot" required><option value="">Vælg plads…</option></select><label for="slice-layer">Laghøjde</label><select id="slice-layer"><option value="0.12">0,12 mm · fin</option><option value="0.2" selected>0,20 mm · standard</option><option value="0.28">0,28 mm · hurtig</option></select><label for="slice-infill">Infill</label><select id="slice-infill"><option value="10">10 %</option><option value="15" selected>15 %</option><option value="20">20 %</option><option value="40">40 %</option><option value="100">100 %</option></select><p>P2S · 0,4 mm dyse · Textured PEI · STL eller 3MF med flere farver · ingen automatisk støtte. Modeller tolkes i millimeter.</p><button id="slice-button">Slice model</button><button type="button" id="show-original" class="secondary">Vis original model</button><p id="slice-message" role="status" aria-live="polite"></p><a id="download-sliced" hidden>Download slicet .gcode.3mf</a></form></div></section>
-<section aria-labelledby="ams-heading"><div class="section-heading"><h2 id="ams-heading">Filament i AMS</h2><span>Printerens oplysninger</span></div><div id="ams-slots" class="ams-grid"><p>Afventer AMS-oplysninger fra printeren.</p></div><p class="ams-note">Restmængder er printerens estimater. Farver vises som registreret på printeren.</p></section>
-<section class="printer"><div><span class="eyebrow">BAMBU LAB P2S</span><h2 id="state">Afventer Pi</h2><p id="updated">Ingen status modtaget endnu</p></div><div class="metrics"><div><strong id="nozzle">—</strong><span>Dyse</span></div><div><strong id="bed">—</strong><span>Byggeplade</span></div><div><strong id="progress">—</strong><span>Fremdrift</span></div></div></section>
-<div class="columns"><section><h2>Nyt printjob</h2><p>Upload en enkeltpladefil slicet til din P2S. Jobbet venter på din godkendelse.</p><form id="upload"><label for="file">Vælg .gcode.3mf · maks. 100 MiB</label><input required type="file" id="file" accept=".3mf"><button id="uploadButton">Upload til kø</button></form><p id="message" role="status" aria-live="polite"></p></section><section><h2>Forbindelsen</h2><p>Din Pi henter selv nye opgaver og sender printerstatus tilbage. Der kræves ingen åbne porte hjemme.</p><p>En afbrudt overførsel genstarter aldrig automatisk et print. Et usikkert job kræver gennemgang.</p></section></div>
-<section><div class="section-heading"><h2>Jobkø</h2><span id="count">0 job</span></div><div id="jobs"><p>Køen er tom.</p></div></section><footer>PrintPlatform · Status opdateres hvert 5. sekund</footer></main><dialog id="approval"><form method="dialog"><h2>Godkend simulering</h2><p id="approvalName"></p><p>Pi’en henter filen og tester forløbet. Der startes ingen fysiske print.</p><div class="actions"><button value="cancel" class="secondary">Annuller</button><button value="approve">Godkend job</button></div></form></dialog></body></html>
+<html lang="da">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PrintPlatform</title>
+  <link rel="stylesheet" href="/style.css">
+  <script defer src="/app.js"></script>
+</head>
+<body>
+<main>
+  <header>
+    <div><span class="eyebrow">MARTINSEN · PRINTSTUDIO</span><h1>PrintPlatform<span>.</span></h1></div>
+    <span id="connection" class="badge" role="status">Forbinder…</span>
+  </header>
+  <div class="notice">Simulering er aktiv. Godkendte job gennemløber køen uden at starte fysiske print.</div>
+
+  <section id="new-print" aria-labelledby="upload-heading">
+    <span class="eyebrow">1 · VÆLG MODEL</span>
+    <h2 id="upload-heading">Hvad vil du printe?</h2>
+    <p>Upload STL, et Bambu Studio 3MF-projekt med farver, eller en færdigslicet .gcode.3mf. Upload starter aldrig print.</p>
+    <form id="upload">
+      <label for="file">STL (maks. 50 MiB) eller 3MF / .gcode.3mf (maks. 100 MiB)</label>
+      <input required type="file" id="file" accept=".stl,.3mf" aria-describedby="message">
+      <button id="uploadButton">Upload model eller printfil</button>
+    </form>
+    <p id="message" role="status" aria-live="polite"></p>
+  </section>
+
+  <section id="model-workspace" hidden aria-labelledby="model-heading">
+    <div class="section-heading"><div><span class="eyebrow">2 · KLARGØR OG KONTROLLÉR</span><h2 id="model-heading">Din model</h2></div><span id="slicer-status">Afventer slicer</span></div>
+    <p id="model-name"></p>
+    <div class="model-layout">
+      <div>
+        <div id="model-preview" class="model-preview" aria-label="Drejeligt 3D-preview af model eller printbaner"></div>
+        <p>Drej visningen med fingeren eller musen · zoom med to fingre eller scroll. Modellens printorientering ændres ikke, når du drejer visningen. Kontrollér den endelige farvefordeling i de slicede printbaner.</p>
+        <div id="layer-controls" hidden>
+          <label for="preview-layer" id="layer-label">Lag</label>
+          <input id="preview-layer" type="range" min="1" value="1">
+          <p id="slice-estimate"></p>
+        </div>
+      </div>
+      <form id="slice-form">
+        <fieldset id="slice-settings"><legend>Filamenter og kvalitet</legend>
+        <div id="slice-filaments"><label for="slice-slot">Filament og farve fra AMS</label><select id="slice-slot" required><option value="">Afventer friske filamentoplysninger…</option></select></div>
+        <label for="slice-quality">Kvalitet</label>
+        <select id="slice-quality"><option value="0.12">Fin · flere detaljer</option><option value="0.2" selected>Standard · til de fleste modeller</option><option value="0.28">Hurtig · færre detaljer</option></select>
+        <details class="advanced"><summary>Avancerede indstillinger</summary>
+          <label for="slice-layer">Laghøjde</label>
+          <select id="slice-layer"><option value="0.12">0,12 mm</option><option value="0.2" selected>0,20 mm</option><option value="0.28">0,28 mm</option></select>
+          <label for="slice-infill">Fyld i modellen (infill)</label>
+          <select id="slice-infill"><option value="10">10 %</option><option value="15" selected>15 %</option><option value="20">20 %</option><option value="40">40 %</option><option value="100">100 %</option></select>
+        </details>
+        <p>P2S · 0,4 mm dyse · Textured PEI · 3MF bevarer projektets farver og dele. Modellen skal kunne printes uden støtte. STL tolkes i millimeter.</p>
+        <button id="slice-button">Klargør model</button></fieldset>
+        <button type="button" id="show-original" class="secondary">Vis original model</button>
+        <p id="slice-message" role="status" aria-live="polite"></p>
+        <a id="download-sliced" hidden>Download slicet .gcode.3mf</a>
+        <div class="review-print" id="review-print" hidden>
+          <p>Kontrollér printbanerne og gennemse derefter jobbet. Dit filamentvalg følger med.</p>
+          <button type="button" id="approve-model">Gennemse og godkend</button>
+          <p id="approve-model-hint" role="status"></p>
+        </div>
+      </form>
+    </div>
+  </section>
+
+  <section class="printer" aria-label="Printerstatus">
+    <div><span class="eyebrow">BAMBU LAB P2S</span><h2 id="state">Afventer Pi</h2><p id="updated">Ingen status modtaget endnu</p></div>
+    <div class="metrics"><div><strong id="nozzle">—</strong><span>Dyse</span></div><div><strong id="bed">—</strong><span>Byggeplade</span></div><div><strong id="progress">—</strong><span>Fremdrift</span></div></div>
+  </section>
+
+  <section aria-labelledby="queue-heading">
+    <div class="section-heading"><h2 id="queue-heading">Aktive og ventende job</h2><span id="count">0 job</span></div>
+    <div id="jobs"><p>Køen er tom. Upload en model for at komme i gang.</p></div>
+  </section>
+  <details class="history" id="history"><summary>Tidligere job <span id="history-count">0 job</span></summary><div id="history-jobs"><p>Ingen afsluttede job endnu.</p></div></details>
+
+  <section aria-labelledby="ams-heading">
+    <div class="section-heading"><h2 id="ams-heading">Filament i AMS</h2><span>Printerens oplysninger</span></div>
+    <div id="ams-slots" class="ams-grid"><p>Afventer AMS-oplysninger fra printeren.</p></div>
+    <p class="ams-note">Restmængder er printerens estimater. Farver vises som registreret på printeren.</p>
+  </section>
+  <details class="connection-details"><summary>Om forbindelsen og jobkøen</summary><p>Din Pi henter selv nye opgaver og sender printerstatus tilbage. Der kræves ingen åbne porte hjemme.</p><p>En afbrudt overførsel genstarter aldrig automatisk et print. Et usikkert job kræver gennemgang.</p></details>
+  <footer>PrintPlatform · Status opdateres hvert 5. sekund</footer>
+</main>
+<dialog id="approval"><form method="dialog"><h2>Godkend simulering</h2><p id="approvalName"></p><p>Pi’en henter filen og tester forløbet. Der startes ingen fysiske print.</p><div class="actions"><button value="cancel" class="secondary">Annuller</button><button value="approve">Godkend job</button></div></form></dialog>
+</body>
+</html>

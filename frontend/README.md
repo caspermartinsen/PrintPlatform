@@ -145,13 +145,11 @@ Pi-API'et forbliver på loopback. Bevar `PRINT_MODE=simulate` under udvikling og
 
 ## Funktionelt forløb
 
-### Étfarveplan og AMS-valg
+### Filamentplan og AMS-valg
 
 Upload analyserer `Metadata/slice_info.config` for faktisk anvendte filamenter,
 ikke antallet af gemte profiler i projektet. Navn på profil hentes fra
-`project_settings.config`. En fil med flere anvendte filamenter, ukendt materiale
-eller manglende metadata kan gemmes, men kan ikke godkendes. Første version kræver,
-at det ene anvendte filament er filament 1; andre indeks skal om-slices.
+`project_settings.config`. Flere anvendte filamenter og huller i filamentindeks understøttes nu. Der vælges én AMS-plads pr. anvendt filament; ukendte materialer eller manglende metadata kan fortsat ikke godkendes.
 Metadata er oplysninger fra sliceren, ikke en analyse af alle G-code-bevægelser.
 
 Godkendelsesdialogen viser filnavn, filamentkrav og AMS-valg. Materialet skal være
@@ -191,7 +189,7 @@ Pi vises offline efter 45 sekunder uden opdatering. Gamle printerfelter skjules.
 Bevar `/data` og Pi'ens `/var/lib/print-agent` ved opdateringer; tab af journal
 eller database kræver manuel gennemgang. Max. 1000 job og cirka 2 GiB filer;
 Oprydning er manuel. Afsæt mindst 512 MiB RAM og tillad 100 MiB uploads i proxyen.
-Ingen slicing, preview eller fjernannullering endnu.
+STL-upload har slicing og 3D-preview; færdige .gcode.3mf-filer følger køforløbet uden nyt preview. Fjernannullering understøttes ikke.
 
 ## Tests
 
@@ -210,3 +208,57 @@ De tester godkendelse, overførsel, simulering, mistet kvittering, genstart og l
 Docker-build: `docker build -t printplatform .`.
 
 Dokploy reference: https://docs.dokploy.com/docs/core/applications/build-type
+
+
+## Stabilitet og enklere printflow
+
+Upload ligger først. Efter STL-upload vælges filament og kvalitet; infill og
+laghøjde kan justeres under Avancerede indstillinger. Det valgte filament
+foreslås igen ved godkendelse og kontrolleres fortsat af både cloud og Pi.
+Godkendelse kan åbnes direkte fra modelområdet. Afsluttede og gennemgåede job
+vises i historikken; dette sletter ikke filer eller frigør lager.
+
+Et afsendt job kan ikke lukkes, før Pi'ens resultat er modtaget. Sene kvitteringer
+for tidligere lukkede job gemmes. Hvis kvitteringen afslører en lokal reservation
+eller accepteret printstart, åbnes jobbet til ny fysisk kontrol. Gentagelse af
+samme kvittering gentager aldrig printstart.
+
+Filnavne kan indeholde danske bogstaver og andre Unicode-tegn. Browseren sender
+navnet i X-Filename-Encoded (UTF-8 percent-encoding); X-Filename understøttes
+fortsat for eksisterende klienter. Cloud og agent bruger UUID-navne mod Pi'en,
+så ældre Pi-versioner fortsat kan modtage filer.
+
+Cloud håndterer op til 16 samtidige forbindelser med timeout fra accept af
+forbindelsen. Databaseovergange, filuploads og ændringer af samme job er låst,
+så samtidige polls ikke får samme job. Brug fortsat én proces/replica og det
+samme permanente volume. Dette erstatter ikke behovet for en produktionsserver
+og egentlig brugeradskillelse ved senere udvidelse.
+
+Nye regressionstests kan køres uden at åbne lokale netværksporte:
+
+```sh
+python3 -m unittest cloud.test_regressions -v
+node --test frontend/app.test.cjs
+```
+
+GitHub Actions kører desuden de eksisterende HTTP-tests på Python 3.11 og 3.13,
+frontend-build og webcontainer-build. De starter ingen fysiske print.
+
+Agenten fortsætter med at sende printerstatus, mens den afventer driverens resultat.
+Et afventende journalført job holder køen optaget og sender ingen ny startkommando.
+
+## Filtyper og farver
+
+| Fil | Forløb |
+| --- | --- |
+| STL | Geometri uden farver; vælg ét filament og klargør |
+| Bambu Studio 3MF-projekt | Én plade med dele/malede farver; vælg en spole pr. projektfilament og klargør |
+| Færdigslicet .gcode.3mf | Bevar eksisterende farveskift, kontrollér printbaner og vælg AMS-pladser |
+
+En færdigslicet fil med endelsen .3mf genkendes også ud fra indholdet. Modeller og rå 3MF-filer uploades med hhv. højst 50 og 100 MiB. 3MF skal være i millimeter og uden eksterne referencer. Flere plader afvises.
+
+Farvevalgene vises enkeltvis i godkendelsesdialogen. Farveforskelle kræver accept; profilkonflikter på bare ét filament blokerer fysisk start. Spoleskift kontrolleres for alle valgte filamenter på Pi’en. Nye job lagrer required_plan_version, så en opdateret agent sammen med en gammel lokal service ikke kan modtage flerfarvejob.
+
+De slicede printbaner farves efter G-code-værktøjsskift. Den oprindelige 3MF-modelvisning kan ikke vise alle Bambu-malingsudvidelser; kontrollér den færdigslicede farvefordeling. Filen konverteres ikke til STL under slicing. Browserbaseret maling af STL er ikke en del af denne ændring.
+
+Lagbaserede AMS-farveskift i 3MF bevares som validerede værktøjsskift. Importeret fri G-code-tekst køres ikke; skiftene omsættes af Bambu Studio med de faste profiler.

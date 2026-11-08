@@ -1,0 +1,56 @@
+name: Verify PrintPlatform
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        python: ['3.11', '3.13']
+    env:
+      PRINT_MODE: simulate
+      ALLOW_LIVE_PRINT: '0'
+      ALLOW_REMOTE_LIVE: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Pi service and telemetry
+        run: python -m unittest discover -s service -v
+      - name: Cloud, slicing, regressions and updater
+        run: python -m unittest cloud.test_platform cloud.test_slicing cloud.test_regressions cloud.test_multicolor deploy.test_updater -v
+
+  frontend:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: node --test frontend/app.test.cjs
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+      - name: Build web container
+        run: docker build -t printplatform:ci .
+
+
+  slicer:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the pinned Bambu Studio slicer
+        run: docker build --platform linux/amd64 -f slicer/Dockerfile -t printplatform-slicer:ci .
+      - name: Slice a two-color 3MF with no network or printer access
+        run: docker run --rm --network none --memory 4g --cpus 2 --pids-limit 128 -e RUN_SLICER_SMOKE=1 --entrypoint python3 printplatform-slicer:ci -m unittest slicer.test_integration -v

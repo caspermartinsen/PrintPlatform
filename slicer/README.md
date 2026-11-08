@@ -1,14 +1,6 @@
-# Direkte flerfarvet 3MF
+# STL-slicing i Dokploy
 
-Upload et uslicet `.3mf`-projekt (maks. 50 MiB) fra Bambu Studio eller OrcaSlicer med én plade. Projektets geometri og farvetildelinger sendes samlet til sliceren. Vælg en AMS-plads for hver projektfarve; hver plads skal indeholde PLA Basic, PLA Matte eller PLA Translucent. Printer, proces og filamentprofiler erstattes med platformens P2S-profiler. Upload og slicing starter ikke print.
-
-Kontrollér printbanerne efter slicing og vælg AMS-plads for hvert anvendt filament ved godkendelsen. Alle pladser kontrolleres igen på Pi'en. Webapp, slicer og Pi-service skal opdateres sammen for flerfarvet print. Generiske 3MF-filer uden projektets filamentmetadata kan indlæses som én farve; vilkårlige teksturer og farveudvidelser understøttes ikke som printfarver. Projekter med flere plader skal først gemmes som et projekt med én plade.
-
-CLI-brugen følger [Bambu Studios dokumentation](https://github.com/bambulab/BambuStudio/wiki/Command-Line-Usage): `--load-filaments` angiver en betroet profil for hver projektfarve.
-
-# STL- og 3MF-slicing i Dokploy
-
-STL slices med ét PLA-filament; 3MF-projekter kan bruge flere filamenter på én plade. Slicing bruger **Bambu Lab P2S med
+Understøttet: én STL-model med ét filament eller ét Bambu Studio 3MF-projekt med flere farver og én plade på **Bambu Lab P2S med
 0,4 mm dyse og Textured PEI Plate**. STL tolkes i millimeter. Modellen centreres
 og arrangeres på pladen; orienteringen mod byggepladen (Z) ændres ikke automatisk,
 men slicerens arrangement kan rotere i pladens plan. Automatisk støtte er slået fra.
@@ -59,12 +51,14 @@ valgfri via `SLICER_ALLOW_INTERNAL_HTTP=1`; brug kun dette på et privat Docker-
 7. Bekræft det slicede preview. Print kræver fortsat den eksisterende særskilte
    godkendelse, herunder tom byggeplade og `START PRINT` ved fysisk start.
 
-**Upload og slicing godkender eller starter aldrig et print.** Den valgte AMS-plads
+**Upload og slicing godkender eller starter aldrig et print.** 3MF-projekter får et AMS-valg for hvert projektfilament. Den valgte AMS-plads
 bestemmer slicerprofilen. Ved senere godkendelse kontrolleres AMS-indholdet igen.
 Modellen kan slices igen, indtil jobbet godkendes. Godkendte/afsendte job kan ikke
 om-slices. Et nyt slice-forsøg får et nyt id; et gammelt resultat kan ikke erstatte
-et nyere. Ved afbrudt worker kan jobbet stå som *Slicer modellen*; genstart forsøget
-med **Genstart slice-forsøg** efter kontrol af workerens log. En ældre kørsel kan
+et nyere. Et slice-forsøg reserveres i højst syv minutter. Ved afbrudt worker bliver
+jobbet derefter *Slicing fejlede* ved næste statuskald eller worker-poll.
+Klargør modellen igen; et udløbet resultat accepteres ikke. Under et aktivt
+forsøg kan **Genstart slice-forsøg** fortsat bruges efter kontrol af workerens log. En ældre kørsel kan
 fortsætte indtil timeout, men resultatet ignoreres, og kun det nye forsøg accepteres.
 
 ## Teknik og begrænsninger
@@ -77,7 +71,7 @@ laghøjde og infill er de eneste brugerbestemte profiloverskrivninger. Ingen
 uploadede scripts, shell-kommandoer, G-code-skabeloner eller eksterne profil-URL'er
 accepteres. En slicerproces har 5 minutters timeout og køres som ikke-root.
 
-Output valideres igen på serveren: én plade, ét anvendt filament, P2S/N7,
+Output valideres igen på serveren: én plade, alle anvendte filamenter, P2S/N7,
 0,4 mm dyse, Textured PEI og den forventede filamentprofil/farve. Resultatet bliver
 kun et køjob, ikke et godkendt print. Ugyldige resultater bliver *Slicing fejlede*.
 
@@ -89,7 +83,7 @@ vellykket print. Tid og gram er slicerens estimater. WebGL kræves til 3D-visnin
 Den genererede `.gcode.3mf` kan stadig downloades til kontrol i Bambu Studio.
 
 Kun én worker understøttes i første version. Bevar webappens `/data`-volume;
-workerens midlertidige filer slettes efter hver opgave. Forældreløse slicing-job
+workerens midlertidige filer slettes efter hver opgave. Udløbne slicing-job markeres fejlede og
 genforsøges manuelt. Gamle STL'er/resultater ryddes manuelt; samlet datakvote er
 ca. 2 GiB / 1000 job. Slicing og preview til eksisterende `.gcode.3mf`-uploads
 er ikke en del af denne tilføjelse; de følger fortsat det eksisterende forløb.
@@ -111,3 +105,14 @@ Bambu Studio-kilde og licens (AGPL-3.0):
 https://github.com/bambulab/BambuStudio/tree/v02.08.04.57
 CLI-dokumentation: https://github.com/bambulab/BambuStudio/wiki/Command-Line-Usage
 3D-preview bruger Three.js (MIT): https://github.com/mrdoob/three.js/tree/r180
+
+
+## 3MF-projekter og flere farver
+
+Slicer-version 2 modtager native Bambu Studio-projekter. Farvede dele, assembly-transformer og malingsdata bevares. CLI får en fuld, betroet filamentprofil pr. projektfilament; maskine og proces sættes fortsat til P2S, 0,4 mm og Textured PEI. Klargøring understøtter de samme tre PLA-profiler som tidligere. Et AMS-valg for en anden materialetype afvises.
+
+Importerede proces-/maskinindstillinger erstattes af de faste profiler. Lagbaserede AMS-værktøjsskift bevares som validerede filament-/højdevalg. Egne G-code-tekster, scripts og variable lagprofiler bruges ikke. Støtte er fortsat slået fra; prime tower aktiveres ved flere projektfilamenter. Projektets pladeplacering bevares, mens STL arrangeres som før. Kun én plade og millimeter understøttes. Alle faktiske outputfilamenters indeks, profil og farve kontrolleres mod valgene.
+
+Cloud kræver en opdateret worker, før 3MF-projekter kan klargøres. Gamle workers får ikke sådanne jobs. Opdatér derfor begge Dokploy-applikationer. Pi-agent og lokal service skal desuden have plan-version 3, før flerfarvejobs kan godkendes eller afleveres.
+
+CI bygger den fastlåste Bambu Studio-container og slicer et lille tofarvet 3MF-projekt med --network none. Testen kontrollerer både de to outputfilamenter og farveindeks i ekstruderingsbanerne. Den har ingen adgang til printeren.

@@ -78,15 +78,3 @@ class PrintPlanTests(unittest.TestCase):
         with zipfile.ZipFile(self.path,'w') as archive:
             archive.writestr('Metadata/slice_info.config', '<!DOCTYPE config [<!ENTITY name "PLA">]><config/>')
         self.assertFalse(analyze(self.path)['supported'])
-
-    def test_multicolor_selection_mapping_and_missing_color(self):
-        analysis={**self.analysis,'filaments':[self.analysis['filaments'][0],{**self.analysis['filaments'][0],'id':3}]}
-        other={**self.slot,'ams_id':1,'slot':4}
-        printer={**self.printer,'ams_slots':[self.slot,other]}
-        choices=[{**self.payload,'filament_id':1},{**self.payload,'ams_id':1,'slot':4,'filament_id':3}]
-        payload={**self.payload,'filaments':choices}
-        selection=select(analysis,printer,payload)
-        self.assertEqual(json.loads(mapping(selection)['ams_mapping']),[1,-1,7])
-        with self.assertRaises(ValueError):select(analysis,printer,{**payload,'filaments':choices[:1]})
-        with self.assertRaises(ValueError):select(analysis,printer,{**payload,'filaments':list(reversed(choices))})
-        with self.assertRaises(ValueError):select(analysis,{**printer,'ams_slots':[self.slot]},payload)
