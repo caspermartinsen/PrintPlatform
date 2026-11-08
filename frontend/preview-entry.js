@@ -45,7 +45,7 @@ export async function mount(container, url, kind, signal) {
     controls.target.copy(center);camera.position.set(center.x+distance,center.y-distance,center.z+distance);
   } else {
     const positions=[],colors=[];
-    const palette=new Map((data.filaments||[]).map(item=>[item.id,new THREE.Color(/^#[0-9a-f]{6}$/i.test(item.color)?item.color:'#5363cf')]));
+    const palette=new Map((data.filaments||[]).map(item=>[item.id,new THREE.Color(/^#[0-9a-f]{6}(?:[0-9a-f]{2})?$/i.test(item.color)?item.color.slice(0,7):'#5363cf')]));
     for(const layer of data.layers) {
       layer.segments.forEach((segment,index)=>{positions.push(segment[0],segment[1],layer.z,segment[2],segment[3],layer.z);const color=palette.get(layer.filament_ids?.[index]||1)||new THREE.Color('#5363cf');colors.push(color.r,color.g,color.b,color.r,color.g,color.b);});
       layerEnds.push(positions.length/3);

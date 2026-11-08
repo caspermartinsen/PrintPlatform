@@ -87,7 +87,7 @@ class MultiColorTests(unittest.TestCase):
 
     def test_toolpath_preview_preserves_logical_colors(self):
         job_id = self.upload(data=sliced_file(ids=(2,4)))
-        preview = self.call('/api/jobs/'+job_id+'/preview')[1]
+        preview = json.loads(self.call('/api/jobs/'+job_id+'/preview')[1])
         self.assertEqual(preview['layers'][0]['filament_ids'],[2,2,4,4])
         self.assertEqual([item['id'] for item in preview['filaments']],[2,4])
 
@@ -183,3 +183,12 @@ class MultiColorTests(unittest.TestCase):
             self.assertEqual(store.jobs()[0]['state'],'queued')
         finally:
             store.lock.close()
+
+
+    def test_four_colors_map_to_all_four_ams_slots(self):
+        job_id = self.upload(data=sliced_file(ids=(1,2,3,4),colors=('#FF0000','#0000FF','#00FF00','#FFFFFF')))
+        analysis=json.loads(self.stored(job_id)['analysis'])
+        choices=[{'filament_id':index,'ams_id':0,'slot':index} for index in range(1,5)]
+        plan=mapping(select(analysis,printer(),{'bed_clear':True,'filaments':choices}))
+        self.assertEqual(json.loads(plan['ams_mapping']),[0,1,2,3])
+        self.assertEqual(json.loads(plan['ams_mapping2']),[{'ams_id':0,'slot_id':index} for index in range(4)])
